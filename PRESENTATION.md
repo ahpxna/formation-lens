@@ -35,18 +35,18 @@ We built **Formation Lens**: it turns ordinary broadcast footage into a live tac
 
 "We test on matches the model never trained on, against the two obvious guesses: everyone stands still, or everyone keeps running the same way.
 
-| At +4 seconds | 6 World Cup matches | Independent test (Metrica, another provider and league) |
+| At +4 seconds | 6 World Cup matches | Held-out match, second provider (Metrica) |
 |---|---|---|
 | Position error | **3.2 m** vs 4.2 m (keep velocity) and 5.9 m (stand still) | **4.0 m** vs 5.2 m and 6.5 m |
 | Which team has the ball | **84%** vs 75% | **84%** vs 74% |
 | Real receiver in our top 3 | **64%** vs 32% | **62%** vs 26% |
 | 90% circles actually containing the player | **89–90%** | **89%** |
 
-The model beats both guesses on every match and every half we tested — 14 out of 14. And on a different data provider it never saw, the self-adjusting circles still keep their 90% promise."
+The model beats both guesses on every match and every half we tested — 14 out of 14. And on a held-out match from a second data provider, the self-adjusting circles still keep their 90% promise."
 
 ## 6. How it works (30 s)
 
-"Trained on **PFF FC's open tracking data of the 2022 World Cup**: 64 matches, 108 hours, about 1.1 million parameters, one hour of training on a MacBook.
+"Trained on **PFF FC's open tracking data of the 2022 World Cup**: 64 matches (58 to train, 6 held out), about 1.1 million parameters, one hour of training on a MacBook.
 Three things made it work:
 - we **simulate the broadcast camera** during training — players outside the view are hidden — so the model learns to infer them, which is exactly what it faces on real video;
 - it predicts **joint futures for the whole team**, not 22 independent guesses;
@@ -65,13 +65,13 @@ Three things made it work:
 ## Q&A preparation
 
 **"Did you test on data you trained on?"**
-No. The 6 World Cup matches were never trained on; they were used to pick the best training epoch, which can flatter them slightly. That is why we also report a fully independent match from another provider and league (Metrica), where the results hold.
+No. The 6 World Cup matches were never trained on; they were used to pick the best training epoch, which can flatter them slightly. That is why we also report a held-out match from a second provider, Metrica, where the results hold. (One other Metrica match was in training, so it is a new match, not a new provider.)
 
 **"Why not predict the whole second half?"**
 We tried and measured it. Simulating 45 minutes is no better than "the second half looks like the first" for team shape. The literature agrees: the best models forecast 1–6 seconds ahead. So we turned it into an honest what-if tool and put the effort into the next 4–8 seconds.
 
 **"Is the what-if useful at all?"**
-For direction, yes: told that a team trails at half-time, the model pushes it about 8 m higher up the pitch — the same shift real teams make (8.1 m in the data).
+For direction, yes: told that a team trails at half-time rather than leads, the model pushes it about 8 m higher up the pitch — the same shift real teams make (8.1 m in the data).
 
 **"How accurate is the video tracking?"**
 On our test clip the camera calibrates on every frame with a median landmark error of about 21 cm, and 20 of 22 players are located per frame. We report coverage; we do not have ground-truth positions for that clip.
