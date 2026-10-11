@@ -47,8 +47,8 @@ Yellow rings: who will have the ball — Denmark: #0, #10 or #4."
 and ends with #0, our first."
 
 *`[0:35–0:43]` final hold.*
-"After eight seconds the players are on average **4 metres** from where we said. Assuming everyone keeps running
-the same way would be 15.5 m off; standing still, 12."
+"After eight seconds our forecast is off by **4 metres** on average, players and ball together. Assuming everyone
+keeps running the same way would be 15.5 m off; assuming everyone stands still, 12."
 
 ## 4. A surprise before a shot — clip 03 (26 s) `[0:43–1:09]`
 
@@ -78,8 +78,8 @@ lapse. We find the moment; the coach decides what it was."
 'three nearest players' guess. The 90% circles hold: 89 to 90%."
 
 *`[1:17]` per-match table.*
-"It wins on every match. It also holds on a held-out match from a second provider, Metrica, and on two providers we
-never used at all, SkillCorner and the Bundesliga."
+"It wins on every match: also on a Metrica match we never used, and on data from two providers we never used at all,
+SkillCorner and the Bundesliga."
 
 ## 6. Why it misses — no video (25 s)
 
