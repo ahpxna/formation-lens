@@ -605,7 +605,30 @@ function renderForecast() {
       if (end[2 * a] == null || !Number.isFinite(now[2 * a])) continue;
       el("line", { x1: end[2 * a], y1: Y(end[2 * a + 1]), x2: now[2 * a], y2: Y(now[2 * a + 1]), stroke: "#ffe066", "stroke-width": 0.25, opacity: 0.9 }, g);
     }
+    // the three players furthest from their forecast, labelled where they really ended up
+    for (const [a, d] of gapsAt(rec, fc.idx, sel, modes[sel].length - 1).filter(([a]) => a < BALL).sort((x, y) => y[1] - x[1]).slice(0, 3)) {
+      el("text", { x: now[2 * a] + 1.6, y: Y(now[2 * a + 1]) - 1.4, "font-size": 2, fill: "#ffe066", "font-weight": 700 }, g).textContent = `${Math.round(d)} m`;
+    }
   }
+}
+
+// Distance from each agent's forecast (future `sel`, step s) to where it really was, as [agent, metres].
+function gapsAt(rec, i, sel, s) {
+  const f = state.doc.forecast, pred = rec.modes[i][sel][s];
+  const real = frameAt(series(), rec.t[i] + (s + 1) * f.dt, new Float64Array(2 * N_AGENTS));
+  const out = [];
+  for (let a = 0; a < N_AGENTS; a++) {
+    if (pred[2 * a] == null || !Number.isFinite(real[2 * a])) continue;
+    out.push([a, Math.hypot(pred[2 * a] - real[2 * a], pred[2 * a + 1] - real[2 * a + 1])]);
+  }
+  return out;
+}
+
+// Jump to a shortlisted moment and show its forecast.
+function reviewMoment(c) {
+  if (state.view !== c.view) setView(c.view);
+  seek(c.t);
+  predict();
 }
 
 // ---------- results: model vs simple guesses on every match with forecasts ----------
@@ -683,7 +706,7 @@ function renderResults() {
     block("Do the 90% circles keep their promise?", "Share of players inside the circle around their predicted position (most likely future). Target: 90% (white line). Self-adjusting circles widen or tighten every 4 s from the misses already seen.",
       groups.map((g) => head(g) + circleBars(g)).join("")) +
     table +
-    `<p class="fc-note">Held-out matches were never trained on but did choose the checkpoint. Independent tests were used for nothing (the Metrica match also comes from another provider and league). There the model still beats both simple guesses; fixed circles are too tight because that provider's tracking differs, and the self-adjusting circles widen to keep the 90% promise. The guarantee is an average over a match's moments, not for every single moment.</p>`;
+    `<p class="fc-note">Held-out matches were never trained on but did choose the checkpoint. Independent tests were used for nothing (the Metrica match also comes from a second provider; one other Metrica match was in training). There the model still beats both simple guesses; fixed circles are too tight because that provider's tracking differs, and the self-adjusting circles widen to keep the 90% promise. The guarantee is an average over a match's moments, not for every single moment.</p>`;
 }
 
 function decisionHtml(rec, i, f) {
@@ -729,9 +752,23 @@ function renderForecastCard() {
   }
   if (fc && fc.phase === "done") {
     const e = rec.err, mErr = e.modes ? e.modes[i][sel] : e.model[i];
-    const row = (name, vals, cls = "") => `<tr class="${cls}"><td>${name}</td>${vals.map((v) => `<td>${v == null ? "–" : v.toFixed(1) + " m"}</td>`).join("")}</tr>`;
+    const row = (name, vals, cls = "") => `<tr class="${cls}"><td>${name}</td>${vals.map((v) => `<td>${v == null || !Number.isFinite(v) ? "–" : v.toFixed(1) + " m"}</td>`).join("")}</tr>`;
+    const gaps = mErr.map((_, s) => gapsAt(rec, i, sel, s));
+    const players = gaps.map((g) => { const p = g.filter(([a]) => a < BALL); return p.length ? p.reduce((t, [, d]) => t + d, 0) / p.length : NaN; });
+    const ball = gaps.map((g) => { const b = g.find(([a]) => a === BALL); return b ? b[1] : NaN; });
     html += `<table class="fc-table"><thead><tr><th>Avg error, this moment</th>${mErr.map((_, s) => `<th>+${(s + 1) * f.dt} s</th>`).join("")}</tr></thead>
-      <tbody>${row(`Future ${FUTURE[sel]}`, mErr, "model")}${row("Stand still", e.still[i])}${row("Keep velocity", e.cv[i])}</tbody></table>`;
+      <tbody>${row(`Future ${FUTURE[sel]}`, mErr, "model")}${row("· players only", players)}${row("· ball", ball)}${row("Stand still", e.still[i])}${row("Keep velocity", e.cv[i])}</tbody></table>`;
+    const worst = gaps[gaps.length - 1].filter(([a]) => a < BALL).sort((x, y) => y[1] - x[1]).slice(0, 3);
+    if (worst.length) {
+      const d = state.doc;
+      html += `<p class="fc-note">Biggest gaps at +${hz} s: ${worst.map(([a, m]) => `<b style="color:${d.teams[a < N_TEAM ? 0 : 1].color}">${d.teams[a < N_TEAM ? 0 : 1].name} #${slotLabel(a)}</b> ${m.toFixed(1)} m`).join(" · ")}. A gap marks a moment to review, not a mistake: it can be a great run, a deflection or an error.</p>`;
+    }
+  }
+  const review = state.doc.review && state.doc.review.moments.filter((c) => c.view === state.view);
+  if (review && review.length && !(fc && (fc.phase === "shown" || fc.phase === "revealing"))) {
+    const t0 = series().t0, tags = (c) => [`${c.ratio.toFixed(1)}× usual`].concat(c.shot.length ? ["shot"] : [], c.turnover ? ["turnover"] : []).join(" · ");
+    html += `<div class="fc-review"><div class="fc-label">Moments worth reviewing in this half (where the model was most surprised)</div>
+      <div class="fc-futures">${review.map((c, k) => `<button class="chip" data-review="${k}" title="players ${c.players.toFixed(1)} m off at +${hz} s (usual ${state.doc.review.typical[c.view].toFixed(1)} m)">${fmt(t0 + c.t)} · ${tags(c)}</button>`).join("")}</div></div>`;
   }
   const notes = [`Average error at +${f.dt} s over this half (${rec.t.length} moments): <b>model ${sum.model[0].toFixed(1)} m</b> · stand still ${sum.still[0].toFixed(1)} m · keep velocity ${sum.cv[0].toFixed(1)} m.`];
   if (sum.heldAuc) {
@@ -748,11 +785,12 @@ function renderForecastCard() {
     const cov = sum.coverage90ByRank ? sum.coverage90ByRank[sel][0] : sum.coverage90[0];
     notes.push(`90% circles were sized on ${f.calibGames} other matches; on this match they contained the real player <b>${pct(cov)}</b> of the time${cov < 0.85 ? " — too tight here: this data comes from another provider" : ""}.`);
   }
-  if (f.independent) notes.push("Independent test: another data provider and league, used neither for training nor for choosing the model.");
+  if (f.independent) notes.push("Independent test: used neither for training nor for choosing the model. It comes from a second data provider (one other match of that provider was in training).");
   else if (f.heldOut) notes.push("Held out from training (used only to choose the checkpoint).");
   html += notes.map((n) => `<p class="fc-note">${n}</p>`).join("");
   $("#fcResult").innerHTML = html;
   card.querySelectorAll("[data-mode]").forEach((b) => (b.onclick = () => { state.fc.mode = +b.dataset.mode; renderForecastCard(); draw(true); }));
+  if (review) card.querySelectorAll("[data-review]").forEach((b) => (b.onclick = () => reviewMoment(review[+b.dataset.review])));
   const cb = $("#fcCircles");
   if (cb) cb.onchange = () => { state.fcCircles = cb.checked; draw(true); };
 }

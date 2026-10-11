@@ -65,7 +65,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="ui")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))  # PORT: set by preview tools
     a = ap.parse_args(argv)
     try:
         server = ThreadingHTTPServer((a.host, a.port), partial(RangeHandler, directory=a.dir))
