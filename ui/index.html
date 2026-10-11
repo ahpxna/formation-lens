@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Formation Lens</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">Formation Lens <span class="sub">tactics from broadcast tracking · short-term forecasts</span></div>
+    <label class="field">Match <select id="match"></select></label>
+    <div class="seg" id="view" role="tablist">
+      <button data-view="half1" role="tab">1st half</button>
+      <button data-view="half2" role="tab">2nd half</button>
+    </div>
+    <label class="field" id="sampleWrap">What-if scenario <select id="sample"></select></label>
+    <button id="resultsBtn" class="btn">Results</button>
+  </header>
+  <dialog id="results" class="results-dialog" aria-label="Results">
+    <div class="results-head"><h3>Model vs simple guesses</h3><button id="resultsClose" class="btn" aria-label="Close">Close</button></div>
+    <div id="resultsBody"></div>
+  </dialog>
+
+  <main class="layout">
+    <section class="stage">
+      <div class="media" id="media">
+        <div class="video-wrap" id="videoWrap">
+          <video id="video" muted playsinline preload="auto"></video>
+          <div class="badge">Original video</div>
+        </div>
+        <div class="pitch-wrap">
+          <svg id="pitch" viewBox="-58 -39 116 78" preserveAspectRatio="xMidYMid meet" aria-label="Pitch view"></svg>
+          <div class="badge" id="badge"></div>
+        </div>
+        <div class="pitch-wrap pitch2-wrap">
+          <svg id="pitch2" viewBox="-58 -39 116 78" preserveAspectRatio="xMidYMid meet" aria-label="What-if scenario"></svg>
+          <div class="badge" id="badge2"></div>
+        </div>
+      </div>
+      <div class="transport">
+        <button id="play" class="icon-btn" aria-label="Play / pause">▶</button>
+        <input type="range" id="time" min="0" max="1000" value="0" step="1" aria-label="Time">
+        <span id="clock" class="clock">00:00</span>
+        <select id="speed" aria-label="Speed">
+          <option value="1">1×</option><option value="4">4×</option>
+          <option value="16" selected>16×</option><option value="64">64×</option>
+        </select>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <select id="metric" aria-label="Metric">
+            <option value="width">Team width (m)</option>
+            <option value="depth">Team depth (m)</option>
+            <option value="area">Team shape area (m²)</option>
+            <option value="defLine">Back line distance from own goal (m)</option>
+            <option value="height">Team centre distance from own goal (m)</option>
+            <option value="poss">Possession, last 5 min (%)</option>
+          </select>
+          <div class="legend" id="legend"></div>
+        </div>
+        <div class="chart-box"><svg id="chart"></svg></div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="card fc-card" id="fcCard" hidden>
+        <h3>Short-term forecast</h3>
+        <p class="fc-help" id="fcHelp"></p>
+        <div class="fc-actions">
+          <button id="fcPredict" class="btn primary">Predict next 8 s</button>
+          <button id="fcReveal" class="btn" disabled>Reveal what happened</button>
+        </div>
+        <div id="fcResult"></div>
+      </div>
+      <div class="card team-card" id="team0"></div>
+      <div class="card team-card" id="team1"></div>
+      <div class="card">
+        <h3>Layers</h3>
+        <label class="check"><input type="checkbox" data-layer="links" checked> Teammate links (&lt;16 m)</label>
+        <label class="check"><input type="checkbox" data-layer="hull" checked> Team shape</label>
+        <label class="check"><input type="checkbox" data-layer="line" checked> Back line</label>
+        <label class="check"><input type="checkbox" data-layer="trails"> Trails (6 s)</label>
+        <label class="check"><input type="checkbox" data-layer="formation"> Average formation</label>
+        <label class="check"><input type="checkbox" data-layer="compare"> Shift vs 1st half (arrows)</label>
+        <label class="field small">Averaging window
+          <select id="window"><option value="5" selected>Last 5 min</option><option value="15">Last 15 min</option><option value="0">Whole half</option></select>
+        </label>
+      </div>
+      <p class="hint">Space: play / pause · P: predict · R: reveal · click the chart to seek.</p>
+    </aside>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

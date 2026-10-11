@@ -1,0 +1,14 @@
+# forecaster (layer B)
+torch>=2.14
+numpy>=2.5
+pandas>=3.0
+scipy>=1.18
+# video -> pitch coordinates (layer A)
+opencv-python>=5.0
+ultralytics>=8.4
+supervision>=0.30
+scikit-learn>=1.9
+gdown>=6.4
+sports @ git+https://github.com/roboflow/sports.git
+# extra tracking providers (DFL open data)
+kloppy>=3.19

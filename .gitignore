@@ -1,0 +1,20 @@
+# Allow-list: this folder also holds other projects (farmpulse/, freshbowl/) and licensed data,
+# so only the Formation Lens files are tracked.
+/*
+!/.gitignore
+!/h2predict/
+!/ui/
+!/scripts/
+!/theory_check/
+!/requirements.txt
+!/PRESENTATION.md
+!/FOOTBALL_AUDIT.md
+!/THEORY_IDEAS_20261011.md
+
+# generated or licensed data (PFF tracking may not be redistributed); regenerate with the scripts
+/ui/data/
+/theory_check/*.npz
+/theory_check/*.json
+__pycache__/
+*.pyc
+.DS_Store
