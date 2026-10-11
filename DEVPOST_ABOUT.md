@@ -49,19 +49,58 @@ The circle widens when a match is harder than expected and tightens when it is e
 
 ## Results
 
-All results are on matches the model never trained on, compared with two obvious guesses: everyone keeps their velocity, or everyone stands still.
+All numbers are on matches the model never trained on. **Position error** is the average distance between the predicted and the real position (lower is better). The simple guesses are **keep velocity** (everyone keeps running straight at their current speed) and **stand still** (everyone stays where they are).
 
-| At +4 s | 6 held-out World Cup matches | Held-out match from a second provider (Metrica) |
+### Main results
+
+| Metric | Model | Simple guesses |
 |---|---|---|
-| Position error | **3.2 m** vs 4.2 m / 5.9 m | **4.0 m** vs 5.2 m / 6.5 m |
-| Which team has the ball | **84%** vs 75% | **84%** vs 74% |
-| Real receiver in our top 3 | **64%** vs 32% | **62%** vs 26% |
-| 90% circles containing the player | **89.5–90.4%** | **89%** |
+| Position error at +4 s, 6 held-out World Cup matches (players + ball) | **3.2 m** | 4.2 m (keep velocity) / 5.9 m (stand still) |
+| Position error at +8 s, same matches | **7.4 m** | 11.5 m / 10.2 m |
+| Position error at +4 s, held-out Metrica match | **4.0 m** | 5.2 m / 6.5 m |
+| Team on the ball in 4 s | **84%** | 75% (team nearest the ball); Metrica: 84% vs 74% |
+| Real receiver in the model's top 3 | **64%** | 32% (3 players nearest the ball); Metrica: 62% vs 26% |
+| 90% circles containing the real player | **89–90%** | fixed-size circles: 79–93% |
+| Match-halves where the model beats both guesses | **14 / 14** | |
+| Calibration of the futures | says 52%, happens 51% | |
 
-- **The model beat both guesses in all 14 match-halves we tested**, on position, team and receiver.
-- **It also holds on two providers we never used:** players' error at +4 s is 4.35 m vs 5.58 m / 7.27 m on 3 SkillCorner matches (broadcast tracking), and 3.97 m vs 5.01 m / 6.34 m on a Bundesliga (DFL) match.
-- **The odds mean what they say:** when the model gives its top future 52%, that future is the closest one 51% of the time.
-- **Where it misses:** in slow build-up play the players end up under 5 m from the forecast after 8 s; in the fastest 10% of moments, 12.6 m. With a turnover in the window the error rises from 6.4 m to 9.2 m, and big misses are almost twice as likely to contain one.
+### Two demo moments (France–Denmark, World Cup 2022)
+
+| Moment | Model | What happened | Error at +8 s (players + ball) |
+|---|---|---|---|
+| 30:20, a good read | 3 futures at 25/20/20%; 73% that someone controls the ball; Denmark; top 3: #0, #10, #4 | The ball reached #10 at +4 s and #0 at +8 s | **4.1 m** vs 15.5 m / 12.3 m |
+| 20:12, a surprise | France 95%; top 3: #2, #1, #7; 32% that someone controls the ball | A long ball to #1, then a shot about 6 s later | **8.6 m** vs 8.7 m / 11.1 m |
+
+#0, #10 and so on are tracking slots, not shirt numbers.
+
+### Where the model misses (players only, +8 s, World Cup)
+
+| Situation | Error |
+|---|---|
+| Slow build-up (players move less than 8 m in 8 s) | **4.9 m** |
+| Fastest 10% of moments | **12.6 m** |
+| No turnover / a turnover in the window | **6.4 m / 9.2 m** |
+| Big misses (over twice the usual error) that contain a turnover | **43%**, vs 23% of all moments |
+
+The model reads build-up play well and is surprised by transitions, the moments that decide matches.
+
+### More checks
+
+| Check | Model | Compared with |
+|---|---|---|
+| SkillCorner, 3 matches never used (players, +4 s) | **4.35 m** | 5.58 m / 7.27 m |
+| DFL Bundesliga, 1 match never used (players, +4 s) | **3.97 m** | 5.01 m / 6.34 m |
+| V1 vs V2 (players, +4 s, World Cup) | **2.92 m** (V1) | 3.37 m (V2, 81 matches): more data did not help, so we kept V1 |
+| Players hidden by the simulated camera (+4 s) | **5.5 m** | 13.4 m (last seen position); visible players: 3.1 m |
+| What-if: the trailing team pushes up | **8.0 m** | real teams: 8.1 m |
+
+### Setup
+
+| Item | Value |
+|---|---|
+| Simulated camera in training | 70% of samples; a 30–60 m view following the ball; 5% of players and 10% of ball positions dropped |
+| 90% circles | radius about 6 m at +4 s, about 15 m at +8 s |
+| Layer A on a 30 s broadcast clip | 100% of frames calibrated; median landmark error 21 cm; about 20 of 22 players per frame; ball found in 92% of frames; 32 pitch landmarks |
 
 ## Challenges we ran into
 
