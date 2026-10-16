@@ -99,6 +99,15 @@ class H2Model(nn.Module):
         self.mode_head = nn.Linear(d, K)
         self.register_buffer("team", torch.as_tensor(TEAM_OF), persistent=False)
 
+    def condition(self, tok_f, b):
+        """Hook for conditional variants (h2predict.cond): the plain forecaster ignores any given future."""
+        return tok_f
+
+    def future_xy(self, xy_f, b):
+        """Positions used for the edge features of the future steps: the last observed ones, unless a variant
+        is given some of the future (h2predict.cond)."""
+        return xy_f
+
     def forward(self, b: dict) -> dict:
         hist = b["hist"]
         B, H, N, _ = hist.shape
@@ -110,7 +119,7 @@ class H2Model(nn.Module):
         static = self.type_emb(self.team)[None] + self.ctx_proj(b["agent_ctx"])
         last = hist[:, -1]
         tok_h = self.in_proj(hist) + static[:, None]
-        tok_f = (self.fut_query + self.in_proj(last) + static)[:, None].expand(B, Fs, N, d)
+        tok_f = self.condition((self.fut_query + self.in_proj(last) + static)[:, None].expand(B, Fs, N, d), b)
         g = self.glob_proj(b["glob"])
         cls_h = self.cls + g[:, None] + self.state_emb(b["hist_state"])
         cls_f = (self.cls + g)[:, None].expand(B, Fs, d)
@@ -118,7 +127,7 @@ class H2Model(nn.Module):
         x = x + self.time_emb[None, :, None]
 
         valid = F.pad(torch.cat([b["hist_valid"], roster[:, None].expand(B, Fs, N)], 1), (0, 1), value=True)
-        xy = torch.cat([hist[..., :2], last[:, None, :, :2].expand(B, Fs, N, 2)], 1)
+        xy = torch.cat([hist[..., :2], self.future_xy(last[:, None, :, :2].expand(B, Fs, N, 2), b)], 1)
         s_bias = (self.edge(xy) + key_bias(valid)[:, :, None, None, :]).reshape(B * T, -1, N + 1, N + 1)
         t_bias = key_bias(valid.transpose(1, 2)).reshape(B * (N + 1), 1, 1, T)
 

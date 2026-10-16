@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Better runs · Formation Lens</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .runs { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 16px; padding: 16px; }
+    .tp-list { display: flex; flex-direction: column; gap: 8px; }
+    .tp { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 10px 12px; cursor: pointer; color: var(--text); }
+    .tp.on { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+    .tp b { font-variant-numeric: tabular-nums; }
+    .tp small { display: block; color: var(--muted); margin-top: 3px; }
+    .pitch-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+    .pitch-card svg { width: 100%; height: auto; display: block; }
+    .caption { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 10px 2px 0; }
+    .summary { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0 0 4px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 22px; height: 0; border-top: 3px solid; display: inline-block; }
+    @media (max-width: 820px) { .runs { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">Formation Lens <span class="sub">better runs · research prototype</span></div>
+    <label class="field">Match <select id="match"></select></label>
+    <div class="seg" id="react" role="tablist">
+      <button data-show="best" class="on">Others react to the suggested run</button>
+      <button data-show="real">Others react to the real run</button>
+    </div>
+    <a class="btn" href="index.html">Back to the forecast</a>
+  </header>
+  <main class="runs">
+    <section>
+      <p class="summary" id="summary"></p>
+      <div class="tp-list" id="list"></div>
+      <p class="summary" style="margin-top:16px">Patterns per player (the advice layer):</p>
+      <ul class="summary" id="advice"></ul>
+    </section>
+    <section class="pitch-card">
+      <svg id="pitch" viewBox="-56 -37 112 74" role="img" aria-label="Pitch with the real and the suggested run"></svg>
+      <div class="legend" id="legend"></div>
+      <p class="caption" id="caption"></p>
+    </section>
+  </main>
+  <script src="runs.js"></script>
+</body>
+</html>
