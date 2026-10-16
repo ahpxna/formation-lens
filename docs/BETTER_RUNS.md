@@ -69,6 +69,42 @@ Có 460 thời điểm tấn công, khoảng 4.300–4.500 đường chạy đư
 2. Phép so sánh **cùng quãng đường** và **ràng buộc khả thi** là bắt buộc. Thiếu chúng, mọi gợi ý đều là "chạy dài hơn, lên trên hơn".
 3. Nút thắt bây giờ là **mô hình giá trị**, không phải model dự báo.
 
+## EPV học từ dữ liệu — `h2predict/epv.py`
+
+**Định nghĩa.** Từ một khoảnh khắc (vị trí và vận tốc của 22 người cùng bóng):
+
+V = P(đội cầm bóng sút trong 10 s) − P(đối thủ sút trong 10 s)
+
+Vế trừ đi để mô hình tự học rủi ro phản công của một đội hình mất cân bằng; đây chính là điều mà giá trị làm thủ công thiếu. Mô hình dùng cú sút thay vì bàn thắng, vì 58 trận có khoảng 1.400 cú sút nhưng chỉ khoảng 150 bàn. Tinh thần giống EPV của Fernández, Bornn và Cervone, nhưng chưa tách thành chuyền / dẫn bóng / sút.
+
+**Mạng.** Một set transformer nhỏ (3 lớp, 64 chiều, 4 head), dùng lại phần "cạnh" giữa các cầu thủ của model dự báo. Train trên 237.912 khoảnh khắc của 58 trận, mất 3 phút.
+
+**Kiểm chứng trên 24.377 khoảnh khắc của 6 trận chưa học:**
+
+| Thước đo | Dự báo đội cầm bóng sút trong 10 s | Dự báo đối thủ sút trong 10 s |
+|---|---|---|
+| Giá trị thủ công (cơ hội ngoài bóng) | AUC 0,775 | — |
+| Độ nguy hiểm tại chỗ bóng | 0,790 | — |
+| **EPV** | **0,838** | **0,856** |
+| Tần suất: dự báo trung bình / thực tế | 4,0% / 4,3% | 0,8% / 1,1% |
+
+### Dùng EPV để chấm đường chạy (Pháp – Đan Mạch, chỉ các phương án khả thi)
+
+| Chỉ số | Giá trị thủ công | EPV |
+|---|---|---|
+| Đường chạy thật tốt hơn bao nhiêu % phương án | 49% | 48% |
+| Như trên, ở 1/4 số pha mà hướng chạy quan trọng nhất | 48% | 42% |
+| Như trên, nhưng **không cho ai phản ứng** | — | 48% |
+| Theo tuyến | — | hậu vệ 48%, tiền vệ 46%, tiền đạo 51% |
+| Lời khuyên theo từng cầu thủ | "lên trên 6–8 m" cho mọi người | "lên trên 7–8,5 m" cho mọi người; gợi ý mạnh nhất thường là đưa thêm người vào vòng cấm |
+
+### Đọc kết quả
+- **EPV là một hàm giá trị tốt hơn hẳn**: dự báo cú sút tốt hơn, khớp tần suất thật, và học được cả rủi ro phản công.
+- **Nhưng dùng EPV để chấm đường chạy vẫn cho kết quả ngang mức ngẫu nhiên**, và lời khuyên vẫn là "dâng lên".
+- **Thủ phạm chính không phải phản ứng yếu.** Cho mọi người đứng yên (không phản ứng) thì kết quả gần như y hệt (48% so với 48%).
+- **Thủ phạm là cách dùng hàm giá trị.** Một hàm giá trị học từ **tương quan** được đem trả lời câu hỏi **phản thực** ("nếu một người chạy khác"). Trong dữ liệu, có cầu thủ trong vòng cấm thường đi kèm những đợt tấn công đang tốt; đặt thêm một người vào đó không tự tạo ra cơ hội như vậy.
+- **Kết luận: lớp lời khuyên tự động chưa nên dùng.** Những gì đáng tin hôm nay là: dự báo 4–8 s, EPV dùng để đánh giá trạng thái thật, và danh sách pha cần xem lại. Trang `runs.html` hiển thị gợi ý như **câu hỏi để HLV xem lại** và ghi rõ điều này ngay trên trang.
+
 ## Giới hạn
 
 - **Phản ứng là tương quan, không phải nhân quả.** Model học "khi cầu thủ này ở đây thì những người khác thường ở đâu" từ dữ liệu thật. Ngoài ra phản ứng đang yếu (1,4 m cho 10 m), nên các phương án có thể trông tốt hơn thực tế, vì đối thủ trong model bám theo ít hơn ngoài đời.
@@ -79,10 +115,11 @@ Có 460 thời điểm tấn công, khoảng 4.300–4.500 đường chạy đư
 
 ## Bước tiếp theo
 
-1. **Thay mô hình giá trị (ưu tiên số 1).** Học giá trị pha bóng trực tiếp từ dữ liệu (EPV, Fernández và cộng sự): xác suất chuyền thành công tới từng điểm, giá trị sau khi nhận bóng, và rủi ro phản công tính trên **cả sân**. Sau đó kiểm lại bằng chính phép thử "đường chạy thật thắng bao nhiêu % phương án khả thi"; mục tiêu là vượt rõ 50%.
-2. Làm phản ứng mạnh và đúng hơn: bước thời gian 1 s; train với nhiều mẫu đường chạy bất thường; đo mức "bám người" so với dữ liệu thật.
-3. Đưa top bước ngoặt cho HLV chấm: giữ hay bỏ, vì sao. Đo tỉ lệ gợi ý hữu ích.
-4. Khi model phản ứng đủ tin cậy, dùng nó làm môi trường cho MARL.
+1. **Chấm đường chạy qua lựa chọn chuyền mà nó tạo ra**, thay vì giá trị của cả trạng thái: giá trị = P(chuyền tới người chạy thành công) × EPV khi người đó nhận bóng. Cách này **kiểm chứng được bằng đường chuyền thật**: người đứng ở vị trí có giá trị cao có thật sự được chuyền nhiều hơn, và tạo ra EPV cao hơn sau khi nhận không.
+2. **Kiểm chứng bằng kết quả trận**: những pha mà đường chạy thật "kém" theo mô hình có thật sự dẫn tới ít cú sút hơn không. Cần chạy trên nhiều trận, khoảng 12 phút mỗi trận.
+3. Làm phản ứng mạnh và đúng hơn: bước thời gian 1 s; train với nhiều mẫu đường chạy bất thường; đo mức "bám người" so với dữ liệu thật.
+4. Đưa top bước ngoặt cho HLV chấm: giữ hay bỏ, vì sao. Đo tỉ lệ gợi ý hữu ích.
+5. Khi model phản ứng đủ tin cậy, dùng nó làm môi trường cho MARL.
 
 ## Chạy lại
 
@@ -96,7 +133,13 @@ Có 460 thời điểm tấn công, khoảng 4.300–4.500 đường chạy đư
 .venv/bin/python -m h2predict.runs --check
 ```
 ```bash
-.venv/bin/python -m h2predict.runs --match pff:3834
+.venv/bin/python -m h2predict.epv
+```
+```bash
+.venv/bin/python -m h2predict.runs --match pff:3834 --value epv
+```
+```bash
+.venv/bin/python -m h2predict.runs --match pff:3834 --value opportunity
 ```
 
 Sau đó mở `http://localhost:8765/runs.html` (server: `.venv/bin/python -m h2predict.serve_ui --dir ui`).

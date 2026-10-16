@@ -64,10 +64,9 @@ function draw() {
   const real = [start[a], ...tp.realFuture.map((s) => s[a])].filter(ok);
   arrow(g, real, { stroke: "#ffffff", "stroke-width": 0.55 });
   arrow(g, [start[a], ...tp.best.run], { stroke: "#8fd16a", "stroke-width": 0.65, "stroke-dasharray": "1.4 0.8" });
-  const pr = tp.ctBest / Math.max(tp.ctReal, 1e-6) - 1;
   $("#caption").innerHTML = `<b>${label(a)}</b> at ${clock(tp.clock)}. White = the real run (8 s); dashed green = the run the value model prefers. ` +
     `Hollow circles = where the others are predicted 8 s later if ${label(a)} makes the ${state.show === "best" ? "suggested" : "real"} run. ` +
-    `Scoring opportunity ${tp.ctReal.toFixed(3)} → ${tp.ctBest.toFixed(3)} (${pr >= 0 ? "+" : ""}${pct(pr)}); the suggestion beats the real run in ${pct(tp.robust)} of the predicted futures; ` +
+    `${state.doc.valueLabel || "Value"}: ${tp.ctReal.toFixed(3)} → ${tp.ctBest.toFixed(3)} (+${tp.gain.toFixed(3)}); the suggestion beats the real run in ${pct(tp.robust)} of the predicted futures; ` +
     `the real run was better than ${pct(tp.realBeats)} of the ${tp.nAlts} alternatives tried.`;
 }
 
@@ -77,11 +76,12 @@ function renderList() {
   const where = s.realRunBeatsWhereItMatters != null ? ` (<b>${pct(s.realRunBeatsWhereItMatters)}</b> in the quarter of runs where the direction matters most)` : "";
   $("#summary").innerHTML = `${s.moments} attacking moments, ${s.playerMoments} player runs scored. The real runs beat ` +
     `<b>${pct(s.realRunBeatsAlternatives)}</b> of the same-length alternatives on average${where}; a clearly better run (in at least 60% of the predicted futures) ` +
-    `exists for ${pct(s.robustBetterShare)} of the runs. Moments where a different run would have gained the most:`;
+    `exists for ${pct(s.robustBetterShare)} of the runs. ` +
+    (s.realRunBeatsAlternatives < 0.55 ? `<b>Research prototype:</b> the real runs score close to chance against plausible alternatives, so these suggestions are questions to review, not advice. ` : "") +
+    `Moments where a different run would have gained the most:`;
   $("#list").innerHTML = d.turningPoints.map((tp, k) => {
-    const pr = tp.ctBest / Math.max(tp.ctReal, 1e-6) - 1;
     return `<button class="tp${k === state.sel ? " on" : ""}" data-k="${k}"><b>${clock(tp.clock)}</b> · ${label(tp.agent)}
-      <small>opportunity +${pct(pr)} · better in ${pct(tp.robust)} of futures</small></button>`;
+      <small>value +${tp.gain.toFixed(3)} · better in ${pct(tp.robust)} of futures</small></button>`;
   }).join("") || `<p class="summary">No moment passed the robustness filter.</p>`;
   const dir = (v, pos, neg) => (Math.abs(v) < 1 ? "" : `${Math.abs(v).toFixed(0)} m ${v > 0 ? pos : neg}`);
   $("#advice").innerHTML = (d.advice || []).slice(0, 6).map((x) => {

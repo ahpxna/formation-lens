@@ -102,7 +102,14 @@ def goalkeeper(b0, attack):
     return sl.start + int(np.argmin(x[sl]))
 
 
-def moment(model, cfg, m, f0, attack, cells, w, dev):
+def line_of(b0, agents, attack):
+    """back / middle / front for each outfield player, from their average depth so far in the attacking frame."""
+    x = to_attack_frame(b0["agent_ctx"][:, :2] * HALF, attack)[:, 0]
+    order = sorted(agents, key=lambda a: x[a])
+    return {a: ("back" if i < 4 else "middle" if i < 7 else "front") for i, a in enumerate(order)}
+
+
+def moment(model, cfg, m, f0, attack, score, dev):
     b0 = build_sample(m, int(f0), cfg)
     fut, fv = b0["fut_xy"] * HALF, b0["fut_valid"]
     now = m.pos[f0]
@@ -127,7 +134,19 @@ def moment(model, cfg, m, f0, attack, cells, w, dev):
     xy, vel, prob = predict(model, batch_of(b0, conds), dev)
     for r, (a, run) in enumerate(conds):  # the conditioned player is where we said, moving as the run implies
         xy[r, :, a], vel[r, :, a] = run[1], (run[1] - run[0]) / cfg.step_s
-    ct = team_value(xy, vel, attack, cells, w)  # (R, K)
+    off = ~b0["on_pitch"]  # players not on the pitch (sent off, not yet on) have no real forecast
+    xy[:, :, off], vel[:, :, off] = np.nan, np.nan
+    ct = score(xy, vel, attack)  # (R, K) value of every predicted future
+    # Diagnostic: the same runs with nobody reacting (everyone else as predicted for the player's real run)
+    real_row = {}
+    for r, (a, kind) in enumerate(owner):
+        real_row.setdefault(a, r)
+    src = np.array([real_row[a] for a, _ in conds])
+    xy_f, vel_f = xy[src].copy(), vel[src].copy()
+    for r, (a, run) in enumerate(conds):
+        xy_f[r, :, a], vel_f[r, :, a] = run[1], (run[1] - run[0]) / cfg.step_s
+    ect_frozen = (prob[src] * score(xy_f, vel_f, attack)).sum(1)
+    lines = line_of(b0, agents, attack)
     ect = (prob * ct).sum(1)
     mean_xy = (prob[..., None, None] * xy).sum(1)
     res = []
@@ -146,7 +165,8 @@ def moment(model, cfg, m, f0, attack, cells, w, dev):
                     "ctReal": float(ect[real]), "ctBest": float(ect[best]),
                     "realBeats": float((ect[alts] < ect[real]).mean()), "n_alts": len(alts),
                     "spread": float(ect[alts].max() - ect[alts].min()),
-                    "dfwd": float(end_best[0] - end_real[0]), "dins": float(abs(end_real[1]) - abs(end_best[1]))})
+                    "dfwd": float(end_best[0] - end_real[0]), "dins": float(abs(end_real[1]) - abs(end_best[1])),
+                    "line": lines[a], "realBeatsNoReaction": float((ect_frozen[alts] < ect_frozen[real]).mean())})
     if not res:
         return None
     top = max((r for r in res if r["robust"] >= MIN_ROBUST), key=lambda r: r["gain"], default=None)
@@ -185,14 +205,22 @@ def run_match(a):
     dev = pick_device(a.device)
     model, cfg = load_cond(a.ckpt, dev)
     m = load_match(a.match)
-    cells = grid()
-    threat, lam = load_threat()
-    w = (threat_of(cells, threat), threat_of(-cells, threat), lam)
+    if a.value == "epv":
+        from .epv import load_epv, value_of
+        net = load_epv(dev)
+        score = lambda xy, vel, k: value_of(net, xy, vel, k, dev)
+        label = "EPV: chance of a shot for minus a shot against within 10 s"
+    else:
+        cells = grid()
+        threat, lam = load_threat()
+        w = (threat_of(cells, threat), threat_of(-cells, threat), lam)
+        score = lambda xy, vel, k: team_value(xy, vel, k, cells, w)
+        label = "Off-ball scoring opportunity"
     names = m.name.split(" ", 1)[1].split("-", 1) if " " in m.name else ["Home", "Away"]
     moments, pm = [], []
     todo = anchors(m, cfg, a.every_s)[: a.limit or None]
     for i, (p, f0, k, t) in enumerate(todo):
-        r = moment(model, cfg, m, f0, k, cells, w, dev)
+        r = moment(model, cfg, m, f0, k, score, dev)
         if r is None:
             continue
         pm += r["players"]
@@ -212,6 +240,9 @@ def run_match(a):
     summary = {"moments": len(todo), "playerMoments": len(pm),
                "realRunBeatsAlternatives": round(float(beats.mean()), 3),
                "realRunBeatsWhereItMatters": round(float(beats[matters].mean()), 3),
+               "realRunBeatsNoReaction": round(float(np.mean([x["realBeatsNoReaction"] for x in pm])), 3),
+               "realRunBeatsByLine": {ln: round(float(np.mean([x["realBeats"] for x in pm if x["line"] == ln])), 3)
+                                      for ln in ("back", "middle", "front") if any(x["line"] == ln for x in pm)},
                "robustBetterShare": round(float(((gains > 0) & (robust >= MIN_ROBUST)).mean()), 3),
                "realRunIsBest": round(float((gains <= 0).mean()), 3),
                "medianBestGain": round(float(np.median(gains)), 4)}
@@ -225,7 +256,7 @@ def run_match(a):
                            "inside": round(float(np.median([x["dins"] for x in better])), 1),
                            "realBeats": round(float(np.mean([x["realBeats"] for x in mine])), 2)})
     advice.sort(key=lambda x: -x["better"])
-    out = {"match": m.name, "teams": names, "colors": COLOURS, "ckpt": a.ckpt, "rule": __doc__.split("\n\n")[1], "summary": summary,
+    out = {"match": m.name, "teams": names, "colors": COLOURS, "ckpt": a.ckpt, "value": a.value, "valueLabel": label, "rule": __doc__.split("\n\n")[1], "summary": summary,
            "turningPoints": picked[:TOP_N], "advice": advice}
     path = Path(a.out or Path("ui/data/runs") / ("".join(c if c.isalnum() or c in "-_" else "_" for c in m.name) + ".json"))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,7 +270,7 @@ def run_match(a):
     for c in picked[:TOP_N]:
         lab = f"{names[c['agent'] // N_TEAM]} #{c['agent'] % N_TEAM}"
         rel = c["gain"] / max(c["ctReal"], 1e-6)
-        print(f"  {int(c['clock'] // 60):02d}:{int(c['clock'] % 60):02d} {lab:<9} opportunity {c['ctReal']:.3f} -> "
+        print(f"  {int(c['clock'] // 60):02d}:{int(c['clock'] % 60):02d} {lab:<9} value {c['ctReal']:.3f} -> "
               f"{c['ctBest']:.3f} (+{100 * rel:.0f}%), better in {100 * c['robust']:.0f}% of futures | run "
               f"{c['real']['run'][1]} -> {c['best']['run'][1]}")
     for x in advice[:6]:
@@ -304,6 +335,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=None)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--value", choices=["epv", "opportunity"], default="epv",
+                    help="learned EPV (h2predict.epv) or the hand-made off-ball opportunity (h2predict.value)")
     ap.add_argument("--device", default="auto")
     a = ap.parse_args(argv)
     check(a) if a.check else run_match(a)
