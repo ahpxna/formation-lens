@@ -105,6 +105,75 @@ Vế trừ đi để mô hình tự học rủi ro phản công của một đ�
 - **Thủ phạm là cách dùng hàm giá trị.** Một hàm giá trị học từ **tương quan** được đem trả lời câu hỏi **phản thực** ("nếu một người chạy khác"). Trong dữ liệu, có cầu thủ trong vòng cấm thường đi kèm những đợt tấn công đang tốt; đặt thêm một người vào đó không tự tạo ra cơ hội như vậy.
 - **Kết luận: lớp lời khuyên tự động chưa nên dùng.** Những gì đáng tin hôm nay là: dự báo 4–8 s, EPV dùng để đánh giá trạng thái thật, và danh sách pha cần xem lại. Trang `runs.html` hiển thị gợi ý như **câu hỏi để HLV xem lại** và ghi rõ điều này ngay trên trang.
 
+## Hướng 3: chấm đường chạy qua cơ chế chuyền bóng — `h2predict/options.py`
+
+### Vì sao không cho EPV "học nhân quả" trực tiếp?
+- Dữ liệu tracking là **quan sát**. EPV học "tình huống như thế này thường dẫn tới cú sút", chứ không học được "nếu một người chạy khác thì cơ hội đổi bao nhiêu".
+- Muốn có tác động nhân quả thì cần một trong ba thứ:
+  1. Thí nghiệm can thiệp. Không làm được với trận thật.
+  2. Giả định không còn yếu tố gây nhiễu nào bị bỏ sót. Nhưng ý đồ, chỉ đạo chiến thuật hay độ mệt thì tracking không thấy.
+  3. Một **cơ chế quan sát được**.
+- Hướng 3 chọn cách thứ ba. Đường chạy tạo giá trị vì nó tạo ra **lựa chọn chuyền** cho người cầm bóng, và **quyết định chuyền cho ai** thì có trong dữ liệu, nên kiểm chứng được.
+
+### Cách làm
+1. **Tách đường chuyền thật từ tracking.**
+   - Người chuyền là cầu thủ gần bóng nhất lúc có sự kiện PASS.
+   - Theo dõi quỹ đạo bóng: người đầu tiên chạm trong phạm vi 1,5 m là người nhận (đồng đội thì thành công, đối thủ thì bị cắt); bóng ra ngoài thì thất bại.
+   - Người nhận dự định của đường chuyền hỏng là đồng đội nằm đúng hướng bóng bay.
+   - Kết quả: 36.554 đường chuyền để train, 3.752 để kiểm định; tỉ lệ thành công 77,5%, đúng với thực tế.
+   - Bản đầu dùng điểm bóng dừng làm mục tiêu và bị **rò rỉ đáp án** (AUC 0,989), vì với đường bị cắt, điểm dừng chính là chỗ hậu vệ chạm bóng. Đã sửa bằng cách chỉ dùng thông tin có tại lúc chuyền.
+2. **Xác suất chuyền thành công** tới vị trí của đồng đội lúc bóng tới, dựa trên đặc trưng thời gian tới điểm (time-to-intercept):
+
+   | | AUC | Brier | Dự báo trung bình / thực tế |
+   |---|---|---|---|
+   | Đầy đủ đặc trưng | **0,787** | 0,141 | 77,9% / 77,7% |
+   | Chỉ khoảng cách | 0,623 | | |
+
+3. **Giá trị lựa chọn** = P(thành công) × EPV(bóng ở đó, ta cầm) − P(hỏng) × EPV(bóng ở đó, đối thủ cầm).
+4. **Mô hình lựa chọn** (conditional logit): người cầm bóng chọn đồng đội nào, học từ quyết định thật. Kết quả trên 3.752 đường chuyền chưa học (đoán bừa đúng khoảng 10%):
+
+   | Mô hình | Đúng top-1 | Top-3 | Log-loss |
+   |---|---|---|---|
+   | Chỉ độ an toàn | 29,8% | 59,5% | 2,032 |
+   | Chỉ khoảng cách | 26,7% | 59,8% | 2,014 |
+   | An toàn + khoảng cách | 29,7% | 62,5% | 1,967 |
+   | **Đầy đủ: + EPV, rủi ro, tiến lên, bề ngang** | **31,8%** | **66,5%** | **1,899** |
+   | Giá trị lựa chọn, không học từ quyết định | 13,9% | 35,7% | |
+
+   - **Thêm giá trị EPV và rủi ro làm dự đoán quyết định chuyền thật tốt hơn rõ.** Tức là cầu thủ thật có cân nhắc giá trị chứ không chỉ chọn đường an toàn. Đây là bằng chứng quan sát được cho cơ chế.
+   - Nếu chỉ dùng "giá trị lựa chọn" thuần túy để đoán thì gần như ngẫu nhiên (13,9%). Cầu thủ thận trọng hơn công thức nhiều.
+   - Trọng số (theo độ lệch chuẩn): an toàn +0,73; EPV nếu nhận được +0,81; khoảng cách −0,41. "EPV của đối thủ nếu mất bóng" lại +1,56. Đó là thói quen **chuyền về hàng thủ**, vùng mà nếu mất bóng thì rất nguy hiểm nhưng chuyền về đó gần như luôn an toàn. Mô hình **mô tả** cách cầu thủ chọn, không phải lời khuyên nên chọn gì.
+5. **Giá trị của một đường chạy** = giá trị kỳ vọng của đường chuyền kế tiếp ở +8 s, tức tổng qua các đồng đội của P(được chọn) × giá trị lựa chọn. Chạy bằng `--value pass`.
+
+### Phản ứng của hậu vệ: model so với thực tế
+Trong 2.253 pha tấn công thật của 6 trận kiểm định, so với độ dịch chung của cả đội, hậu vệ gần nhất chỉ bám theo **0,28 m (dọc) và 0,22 m (ngang)** cho mỗi mét người tấn công di chuyển. Model có điều kiện cho 0,14 m/m theo chiều ngang: yếu hơn thực tế khoảng một phần ba, nhưng không chênh nhiều. Hậu vệ World Cup phần lớn giữ khu vực chứ không kèm người.
+
+### Kết quả trên trận Pháp – Đan Mạch (chỉ các phương án khả thi)
+
+| Chỉ số | Giá trị thủ công | EPV | Giá trị đường chuyền kế tiếp |
+|---|---|---|---|
+| Đường chạy thật tốt hơn bao nhiêu % phương án | 49% | 48% | 47% |
+| Như trên, ở pha mà hướng chạy quan trọng nhất | 48% | 42% | 42% |
+| Như trên, **không ai phản ứng** | — | 48% | 47% |
+| Sau đường chạy thật: P(được chọn) có dự đoán đúng ai nhận bóng 8–12 s sau không | — | — | AUC 0,54 (tỉ lệ gốc 9%) |
+| Lời khuyên | "lên trên 6–8 m" | "lên trên 7–8,5 m" | "lên trên 7–8,5 m" |
+
+## Kết luận chung của thử nghiệm
+
+1. **Từng thành phần đều chạy và đã được kiểm chứng trên dữ liệu chưa học:**
+   - Model phản ứng: biết đường chạy của một người thì đoán những người khác tốt hơn.
+   - EPV: AUC 0,84 / 0,86, khớp tần suất thật.
+   - Xác suất chuyền thành công: AUC 0,79.
+   - Mô hình lựa chọn: thêm giá trị làm dự đoán quyết định chuyền thật tốt hơn.
+2. **Ghép lại để "tìm đường chạy tốt hơn" thì cả ba cách chấm đều cho cùng một kết quả:** đường chạy thật chỉ ngang hoặc dưới mức ngẫu nhiên so với các phương án khả thi, và lời khuyên đồng loạt là "dâng lên".
+3. **Thủ phạm là mục tiêu tối ưu, không phải mô hình.** Phép thử "không ai phản ứng" giữ nguyên mọi người xung quanh, chỉ đổi vị trí người chạy, mà đường chạy thật vẫn thua. Nghĩa là mục tiêu "giá trị tấn công trong 8 s tới" luôn thích vị trí gần khung thành hơn. Cầu thủ thật đứng chỗ khác vì những nhiệm vụ mục tiêu này không thấy: hỗ trợ gần bóng, che phía sau khi mất bóng, canh thời điểm để không việt vị, giữ cấu trúc đội hình.
+4. **Hệ quả:** chưa thể đưa lời khuyên tự động. Thứ dùng được là danh sách pha để HLV đặt câu hỏi, cùng các thành phần đã kiểm chứng (dự báo, EPV, xác suất chuyền, mô hình lựa chọn).
+
+### Hướng đi tiếp có cơ sở
+- **Học mục tiêu từ chính cầu thủ** (inverse RL / học sở thích): thay vì tự đặt mục tiêu, suy ra mục tiêu mà đường chạy thật đang tối ưu (gồm cả nhiệm vụ phòng ngự và hỗ trợ), rồi mới tìm chỗ lệch. Thước đo: đường chạy thật phải thắng rõ hơn 50% các phương án khả thi.
+- **Mục tiêu do HLV đặt cho từng vai trò**, ví dụ "tiền vệ trụ: luôn là lựa chọn chuyền an toàn + che khoảng trống trung tâm". Khi đó tối ưu hóa có ý nghĩa vì mục tiêu đúng với ý đồ.
+- **Kiểm chứng bằng kết quả trên nhiều trận**: những pha mà đường chạy thật lệch xa phương án "tốt" có dẫn tới ít cơ hội hơn không.
+
 ## Giới hạn
 
 - **Phản ứng là tương quan, không phải nhân quả.** Model học "khi cầu thủ này ở đây thì những người khác thường ở đâu" từ dữ liệu thật. Ngoài ra phản ứng đang yếu (1,4 m cho 10 m), nên các phương án có thể trông tốt hơn thực tế, vì đối thủ trong model bám theo ít hơn ngoài đời.
@@ -134,6 +203,12 @@ Vế trừ đi để mô hình tự học rủi ro phản công của một đ�
 ```
 ```bash
 .venv/bin/python -m h2predict.epv
+```
+```bash
+.venv/bin/python -m h2predict.options
+```
+```bash
+.venv/bin/python -m h2predict.runs --match pff:3834 --value pass
 ```
 ```bash
 .venv/bin/python -m h2predict.runs --match pff:3834 --value epv

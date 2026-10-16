@@ -102,6 +102,16 @@ def goalkeeper(b0, attack):
     return sl.start + int(np.argmin(x[sl]))
 
 
+def received(m, f0, a, prob_real, pi_real, attack, cfg):
+    """After the real run: the model's chance that the next pass goes to this player, and whether they really
+    got the ball 8-12 s after the anchor (the check that the option mechanism carries over to runs)."""
+    if pi_real is None:
+        return {}
+    s = a if attack == 0 else a - N_TEAM
+    lo, hi = f0 + int(2 * cfg.step_s * m.fps), f0 + int(3 * cfg.step_s * m.fps)
+    return {"pChosen": float((prob_real * pi_real[:, s]).sum()), "gotBall": bool((m.possessor[lo:hi] == a).any())}
+
+
 def line_of(b0, agents, attack):
     """back / middle / front for each outfield player, from their average depth so far in the attacking frame."""
     x = to_attack_frame(b0["agent_ctx"][:, :2] * HALF, attack)[:, 0]
@@ -136,7 +146,10 @@ def moment(model, cfg, m, f0, attack, score, dev):
         xy[r, :, a], vel[r, :, a] = run[1], (run[1] - run[0]) / cfg.step_s
     off = ~b0["on_pitch"]  # players not on the pitch (sent off, not yet on) have no real forecast
     xy[:, :, off], vel[:, :, off] = np.nan, np.nan
-    ct = score(xy, vel, attack)  # (R, K) value of every predicted future
+    ct = score(xy, vel, attack)  # (R, K) value of every predicted future, or (value, P(chosen) per team-mate)
+    pi = None
+    if isinstance(ct, tuple):
+        ct, pi = ct
     # Diagnostic: the same runs with nobody reacting (everyone else as predicted for the player's real run)
     real_row = {}
     for r, (a, kind) in enumerate(owner):
@@ -145,7 +158,8 @@ def moment(model, cfg, m, f0, attack, score, dev):
     xy_f, vel_f = xy[src].copy(), vel[src].copy()
     for r, (a, run) in enumerate(conds):
         xy_f[r, :, a], vel_f[r, :, a] = run[1], (run[1] - run[0]) / cfg.step_s
-    ect_frozen = (prob[src] * score(xy_f, vel_f, attack)).sum(1)
+    frozen = score(xy_f, vel_f, attack)
+    ect_frozen = (prob[src] * (frozen[0] if isinstance(frozen, tuple) else frozen)).sum(1)
     lines = line_of(b0, agents, attack)
     ect = (prob * ct).sum(1)
     mean_xy = (prob[..., None, None] * xy).sum(1)
@@ -166,7 +180,8 @@ def moment(model, cfg, m, f0, attack, score, dev):
                     "realBeats": float((ect[alts] < ect[real]).mean()), "n_alts": len(alts),
                     "spread": float(ect[alts].max() - ect[alts].min()),
                     "dfwd": float(end_best[0] - end_real[0]), "dins": float(abs(end_real[1]) - abs(end_best[1])),
-                    "line": lines[a], "realBeatsNoReaction": float((ect_frozen[alts] < ect_frozen[real]).mean())})
+                    "line": lines[a], "realBeatsNoReaction": float((ect_frozen[alts] < ect_frozen[real]).mean()),
+                    **received(m, f0, a, prob[real], pi[real] if pi is not None else None, attack, cfg)})
     if not res:
         return None
     top = max((r for r in res if r["robust"] >= MIN_ROBUST), key=lambda r: r["gain"], default=None)
@@ -201,11 +216,34 @@ def anchors(m, cfg, every_s):
     return out
 
 
+def receiver_check(pm):
+    rows = [x for x in pm if "pChosen" in x]
+    if not rows:
+        return {}
+    p = np.array([x["pChosen"] for x in rows])
+    y = np.array([x["gotBall"] for x in rows])
+    if y.all() or not y.any():
+        return {}
+    from .value import auc
+    return {"receiverAUC": round(float(auc(p, y)), 3), "receiverRate": round(float(y.mean()), 3)}
+
+
 def run_match(a):
     dev = pick_device(a.device)
     model, cfg = load_cond(a.ckpt, dev)
     m = load_match(a.match)
-    if a.value == "epv":
+    if a.value == "pass":
+        from .epv import load_epv, to_attack
+        from .options import load_options, next_pass_value
+        net, opt = load_epv(dev), load_options()
+
+        def score(xy, vel, k):
+            P, V = to_attack(xy, vel, k)
+            sh = P.shape[:-2]
+            e, pi = next_pass_value(opt, net, dev, P.reshape(-1, 23, 2).astype(np.float32), V.reshape(-1, 23, 2).astype(np.float32))
+            return e.reshape(sh), pi.reshape(*sh, N_TEAM)
+        label = "Expected value of the next pass (who the passer would pick x what that option is worth)"
+    elif a.value == "epv":
         from .epv import load_epv, value_of
         net = load_epv(dev)
         score = lambda xy, vel, k: value_of(net, xy, vel, k, dev)
@@ -241,6 +279,7 @@ def run_match(a):
                "realRunBeatsAlternatives": round(float(beats.mean()), 3),
                "realRunBeatsWhereItMatters": round(float(beats[matters].mean()), 3),
                "realRunBeatsNoReaction": round(float(np.mean([x["realBeatsNoReaction"] for x in pm])), 3),
+               **receiver_check(pm),
                "realRunBeatsByLine": {ln: round(float(np.mean([x["realBeats"] for x in pm if x["line"] == ln])), 3)
                                       for ln in ("back", "middle", "front") if any(x["line"] == ln for x in pm)},
                "robustBetterShare": round(float(((gains > 0) & (robust >= MIN_ROBUST)).mean()), 3),
@@ -335,8 +374,9 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=None)
     ap.add_argument("--check", action="store_true")
-    ap.add_argument("--value", choices=["epv", "opportunity"], default="epv",
-                    help="learned EPV (h2predict.epv) or the hand-made off-ball opportunity (h2predict.value)")
+    ap.add_argument("--value", choices=["pass", "epv", "opportunity"], default="pass",
+                    help="expected next-pass value (h2predict.options), learned EPV (h2predict.epv) or the hand-made "
+                         "off-ball opportunity (h2predict.value)")
     ap.add_argument("--device", default="auto")
     a = ap.parse_args(argv)
     check(a) if a.check else run_match(a)
