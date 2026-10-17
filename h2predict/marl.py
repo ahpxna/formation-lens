@@ -3,16 +3,21 @@ while everyone else moves too, how would the team move?
 
 The game (one decision per moment, both teams at once): every player with a run of >= 4 m picks one of its
 same-length directions (the cached choice sets of h2predict.irl). A player's reward is the learned objective of
-their group (h2predict.styles: phase x detailed role), computed on the JOINT outcome: the distances to the nearest
-team-mate and opponent and the offside line depend on where the others went; the other features are the cached
-ones (computed against the forecast).
+their group (h2predict.styles: phase x detailed role), computed on the JOINT outcome (h2predict.game): the distances
+to the nearest team-mate and opponent, the offside line and being open for a pass (the completion model of
+h2predict.options against where the defenders went, i.e. passing lanes) depend on where the others went; the other
+features are the cached ones (computed against the forecast).
+
+Spacing constraint: left alone, the learners bunch (twice as many players end next to a team-mate as in real
+football). The constrained version keeps the share of players ending closer to a team-mate than the real-data 10th
+percentile at the real rate, 10% (Lagrangian, the multiplier found by dual ascent).
 
 Learning: one softmax policy per group over the same features seen against the forecast (what a player can
 anticipate), started at the imitation policy (the learned objective itself, i.e. max-ent IRL). Independent learners
 with the exact counterfactual baseline: each agent's expected reward over all of its own options, others' actions
 sampled; plus a KL penalty to the imitation policy so the runs stay human. Checked on held-out matches: the joint
-reward, how close the policy stays to the real runs, and an independent check, the team's EPV of the resulting
-shape (EPV is not the reward).
+reward, how close the policy stays to the real runs, crowding and spacing, and an independent check, the team's EPV
+of the resulting shape (EPV is not the reward).
 
     .venv/bin/python -m h2predict.marl
 """
@@ -23,13 +28,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .data import BALL, N_TEAM
+from .data import BALL
 from .epv import load_epv, value_of
+from .game import F_MATE, TEAM_OF, nearest_mate, run_features
 from .irl import CACHE, FEATS
+from .options import load_options
 from .styles import OUT as STYLES, load_sets
 from .train import pick_device
 
-DYN = [FEATS.index("nearest opponent"), FEATS.index("nearest team-mate"), FEATS.index("offside")]
 OUT = Path("checkpoints/marl.json")
 
 
@@ -78,28 +84,17 @@ def joint_positions(t, choice):
     return P
 
 
-def rewards(t, P, W, mu, sd):
-    """Reward of every option of every deciding player, the others where P puts them. (B, A, C)"""
-    X = t["X"].clone()
-    E = t["ends"]  # (B, A, C, 2)
-    players = P[:, None, None, :BALL]  # (B, 1, 1, 22, 2)
-    d = torch.linalg.norm(E[..., None, :] - players, dim=-1)  # (B, A, C, 22)
-    d = torch.nan_to_num(d, nan=1e6)
-    own = torch.nn.functional.one_hot(t["slot"].clamp(max=BALL - 1), BALL).bool()[:, :, None, :]
-    d = d.masked_fill(own, 1e6)
-    team_of = (torch.arange(BALL) >= N_TEAM).long()
-    mate = (team_of[None, None, None] == t["team"][..., None, None])
-    X[..., DYN[0]] = torch.clamp(d.masked_fill(mate, 1e6).min(-1).values / 10, max=3.0)
-    X[..., DYN[1]] = torch.clamp(d.masked_fill(~mate, 1e6).min(-1).values / 10, max=3.0)
-    sgn = torch.where(t["team"] == 0, 1.0, -1.0)  # (B, A): own attacking frame
-    defx = torch.where(t["team"][..., None] == 0, P[:, None, N_TEAM:BALL, 0], P[:, None, :N_TEAM, 0])  # (B, A, 11)
-    defx = torch.nan_to_num(defx * sgn[..., None], nan=-1e6).sort(-1).values
-    line = torch.maximum(defx[..., -2], P[:, BALL, 0][:, None] * sgn)  # (B, A)
-    x = E[..., 0] * sgn[..., None]
-    attacking = (t["team"] == t["k"][:, None])[..., None]
-    X[..., DYN[2]] = (attacking & (x > 0) & (x > line[..., None])).float()
+def rewards(t, P, W, mu, sd, opt=None, crowd_m=None):
+    """Reward of every option of every deciding player, the others where P puts them. (B, A, C)
+    Recomputed on the joint outcome: nearest team-mate / opponent, offside and, with the pass model `opt`, being open
+    for a pass against where the defenders really are. With crowd_m also returns the crowding cost of every option
+    (1 if it ends closer than crowd_m metres to a team-mate)."""
+    X = run_features(t["ends"], P, t["slot"], t["team"], t["k"], static=t["X"], opt=opt)
     z = (X - mu) / sd
-    return (z * W[t["group"]][:, :, None, :]).sum(-1).masked_fill(~t["mask"], -1e9)
+    R = (z * W[t["group"]][:, :, None, :]).sum(-1).masked_fill(~t["mask"], -1e9)
+    if crowd_m is None:
+        return R
+    return R, (X[..., F_MATE] * 10 < crowd_m).float()
 
 
 def policy_logits(t, theta, mu, sd):
@@ -109,6 +104,50 @@ def policy_logits(t, theta, mu, sd):
 
 def sample(logits):
     return torch.distributions.Categorical(logits=logits).sample()
+
+
+def train(tr, W, mu, sd, opt, epochs, kl, lr, crowd_m=None, target=0.10, dual_lr=0.5, seed=0):
+    """Independent policy-gradient learners (exact own-option expectation, others sampled) with a KL to the
+    imitation policy. With crowd_m: constrained (Lagrangian) - the share of players ending closer than crowd_m to a
+    team-mate is kept at the real-data rate `target`, the multiplier found by dual ascent."""
+    theta = torch.nn.Parameter(W.clone())
+    adam = torch.optim.Adam([theta], lr=lr)
+    lam = 0.0
+    rng = np.random.default_rng(seed)
+    for ep in range(epochs):
+        order = rng.permutation(len(tr))
+        tot, crowd = 0.0, []
+        for i in range(0, len(order), 256):
+            t = batch([tr[j] for j in order[i:i + 256]])
+            logits = policy_logits(t, theta, mu, sd)
+            with torch.no_grad():
+                P = joint_positions(t, sample(logits))
+                R, cost = rewards(t, P, W, mu, sd, opt, crowd_m if crowd_m else 0.0)
+                ref = torch.log_softmax(policy_logits(t, W, mu, sd), -1)
+            logp = torch.log_softmax(logits, -1)
+            pi = logp.exp()
+            gain = (pi * torch.where(t["mask"], R - lam * cost, 0.0)).sum(-1)
+            div = (pi * (logp - ref)).masked_fill(~t["mask"], 0.0).sum(-1)
+            loss = -((gain - kl * div) * t["amask"]).sum() / t["amask"].sum()
+            adam.zero_grad()
+            loss.backward()
+            adam.step()
+            rate = float(((pi * cost).sum(-1) * t["amask"]).sum() / t["amask"].sum())
+            crowd.append(rate)
+            if crowd_m:
+                lam = max(0.0, lam + dual_lr * (rate - target))
+            tot += loss.item() * len(t["k"])
+        print(f"  epoch {ep + 1}/{epochs}: objective {-tot / len(tr):.4f} | crowded share {np.mean(crowd):.3f}"
+              + (f" | multiplier {lam:.2f}" if crowd_m else ""), flush=True)
+    return theta.detach(), lam
+
+
+def spread(P, team):
+    """Mean nearest-team-mate distance of each team's outfield players in configuration P (B, 23, 2)."""
+    d = torch.cdist(P[:, :BALL], P[:, :BALL])
+    same = (TEAM_OF[:, None] == TEAM_OF[None]) & ~torch.eye(BALL, dtype=torch.bool)
+    d = torch.nan_to_num(d, nan=1e6).masked_fill(~same[None], 1e6).min(-1).values
+    return torch.where(d < 1e5, d, torch.nan)
 
 
 def main(argv=None):
@@ -122,88 +161,88 @@ def main(argv=None):
     W = torch.as_tensor(np.array(st["W"]), dtype=torch.float32)
     mu = torch.as_tensor(np.array(st["mu"]), dtype=torch.float32)
     sd = torch.as_tensor(np.array(st["sd"]), dtype=torch.float32)
+    opt = load_options()
     parts = load_sets()
     tr = moments([p for p in parts if not p["val"]])
     va = moments([p for p in parts if p["val"]])
     print(f"moments: {len(tr)} training, {len(va)} held-out; groups {len(st['groups'])}", flush=True)
-    theta = torch.nn.Parameter(W.clone())
-    opt = torch.optim.Adam([theta], lr=a.lr)
-    rng = np.random.default_rng(0)
-    for ep in range(a.epochs):
-        order = rng.permutation(len(tr))
-        tot = 0.0
-        for i in range(0, len(order), 256):
-            t = batch([tr[j] for j in order[i:i + 256]])
-            logits = policy_logits(t, theta, mu, sd)
-            with torch.no_grad():
-                P = joint_positions(t, sample(logits))
-                R = rewards(t, P, W, mu, sd)
-                ref = torch.log_softmax(policy_logits(t, W, mu, sd), -1)
-            logp = torch.log_softmax(logits, -1)
-            pi = logp.exp()
-            gain = (pi * torch.where(t["mask"], R, 0.0)).sum(-1)  # exact expectation over own options
-            kl = (pi * (logp - ref)).masked_fill(~t["mask"], 0.0).sum(-1)
-            loss = -((gain - a.kl * kl) * t["amask"]).sum() / t["amask"].sum()
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            tot += loss.item() * len(t["k"])
-        print(f"  epoch {ep + 1}/{a.epochs}: objective {-tot / len(tr):.4f}", flush=True)
+    # what "too close" means in real football: the 10th percentile of a player's distance to the nearest
+    # team-mate, with everyone where they really went (training matches)
+    near = []
+    for i in range(0, len(tr), 512):
+        t = batch(tr[i:i + 512])
+        near.append(nearest_mate(joint_positions(t, torch.zeros_like(t["slot"])), t["slot"], t["team"], t["amask"])[t["amask"]].numpy())
+    near = np.concatenate(near)
+    crowd_m = float(np.quantile(near, 0.10))
+    print(f"real runs: 10% of players end within {crowd_m:.1f} m of a team-mate (median {np.median(near):.1f} m)", flush=True)
+    print("MARL without a spacing constraint:", flush=True)
+    th_free, _ = train(tr, W, mu, sd, opt, a.epochs, a.kl, a.lr)
+    print("MARL with the spacing constraint (Lagrangian):", flush=True)
+    th_con, lam = train(tr, W, mu, sd, opt, a.epochs, a.kl, a.lr, crowd_m=crowd_m)
 
-    # held-out evaluation
     dev = pick_device(a.device)
     net = load_epv(dev)
-    res = {name: {"reward": [], "pReal": [], "epv": []} for name in ("real runs", "imitation (IRL)", "MARL")}
-    shift = {g: [] for g in range(len(st["groups"]))}
+    pols = {"imitation (IRL)": W, "MARL": th_free, "MARL + spacing": th_con}
+    names = ["real runs"] + list(pols)
+    res = {n: {k: [] for k in ("reward", "pReal", "epv", "crowded", "spread")} for n in names}
+    shift = {n: {g: [] for g in range(len(st["groups"]))} for n in pols}
     for i in range(0, len(va), 256):
         t = batch(va[i:i + 256])
         am = t["amask"]
         with torch.no_grad():
-            for name, th in (("imitation (IRL)", W), ("MARL", theta.detach())):
-                logits = policy_logits(t, th, mu, sd)
-                pi = torch.softmax(logits, -1)
-                r = []
-                for _ in range(8):  # Monte Carlo over the others' sampled moves
-                    ch = sample(logits)
-                    R = rewards(t, joint_positions(t, ch), W, mu, sd)
-                    r.append(torch.gather(R, 2, ch[..., None])[..., 0])
-                res[name]["reward"].append(torch.stack(r).mean(0)[am].numpy())
-                res[name]["pReal"].append(pi[..., 0][am].numpy())
-                best = logits.argmax(-1)
-                P = joint_positions(t, best).numpy()
-                res[name]["epv"].append(np.array([value_of(net, P[b][None], np.zeros_like(P[b][None]), int(t["k"][b]), dev)[0]
-                                                  for b in range(len(P))]))
-                if name == "MARL":
+            for name in names:
+                if name == "real runs":
+                    ch = torch.zeros_like(t["slot"])
+                    pi = None
+                else:
+                    logits = policy_logits(t, pols[name], mu, sd)
+                    pi = torch.softmax(logits, -1)
+                    r = []
+                    for _ in range(8):  # Monte Carlo over everyone's sampled moves
+                        s_ = sample(logits)
+                        R = rewards(t, joint_positions(t, s_), W, mu, sd, opt)
+                        r.append(torch.gather(R, 2, s_[..., None])[..., 0])
+                    res[name]["reward"].append(torch.stack(r).mean(0)[am].numpy())
+                    res[name]["pReal"].append(pi[..., 0][am].numpy())
+                    ch = logits.argmax(-1)
+                P = joint_positions(t, ch)
+                if name == "real runs":
+                    R = rewards(t, P, W, mu, sd, opt)
+                    res[name]["reward"].append(R[..., 0][am].numpy())
+                    res[name]["pReal"].append(np.ones(int(am.sum())))
+                nm = nearest_mate(P, t["slot"], t["team"], am)
+                res[name]["crowded"].append((nm[am] < crowd_m).float().numpy())
+                res[name]["spread"].append(np.nanmean(spread(P, None).numpy(), 1))
+                Pn = P.numpy()
+                res[name]["epv"].append(np.array([value_of(net, Pn[b][None], np.zeros_like(Pn[b][None]), int(t["k"][b]), dev)[0]
+                                                  for b in range(len(Pn))]))
+                if pi is not None:
                     Xs = t["X"]
+                    d = torch.gather(Xs, 2, ch[..., None, None].expand(-1, -1, 1, Xs.shape[-1]))[:, :, 0] - Xs[:, :, 0]
                     for g in range(len(st["groups"])):
                         sel = am & (t["group"] == g)
                         if sel.any():
-                            d = torch.gather(Xs, 2, best[..., None, None].expand(-1, -1, 1, Xs.shape[-1]))[:, :, 0] - Xs[:, :, 0]
-                            shift[g].append(d[sel].numpy())
-            real = torch.zeros_like(t["slot"])
-            R = rewards(t, joint_positions(t, real), W, mu, sd)
-            res["real runs"]["reward"].append(R[..., 0][am].numpy())
-            res["real runs"]["pReal"].append(np.ones(int(am.sum())))
-            P = joint_positions(t, real).numpy()
-            res["real runs"]["epv"].append(np.array([value_of(net, P[b][None], np.zeros_like(P[b][None]), int(t["k"][b]), dev)[0]
-                                                     for b in range(len(P))]))
+                            shift[name][g].append(d[sel].numpy())
     print(f"held-out matches, {len(va)} moments (reward = each player's learned objective on the joint outcome):")
     summary = {}
-    for name, v in res.items():
-        r, pr, e = (np.concatenate(v[k]) for k in ("reward", "pReal", "epv"))
-        summary[name] = {"reward": float(r.mean()), "pReal": float(pr.mean()), "epv": float(e.mean())}
-        print(f"  {name:<16} mean reward {r.mean():+.3f} | probability of the real run {pr.mean():.3f} | "
-              f"team EPV of the shape {e.mean():+.4f}")
-    print("what coordination changes, MARL's choice minus the real run (mean feature change per group):")
+    for name in names:
+        v = {k: np.concatenate(x) for k, x in res[name].items()}
+        summary[name] = {k: float(np.nanmean(x)) for k, x in v.items()}
+        print(f"  {name:<16} reward {summary[name]['reward']:+.3f} | P(real run) {summary[name]['pReal']:.3f} | "
+              f"crowded {summary[name]['crowded']:.3f} | spacing {summary[name]['spread']:.1f} m | team EPV {summary[name]['epv']:+.4f}")
     changes = {}
-    for g, name in enumerate(st["groups"]):
-        if not shift[g]:
-            continue
-        d = np.concatenate(shift[g]).mean(0)
-        top = np.argsort(-np.abs(d))[:3]
-        changes[name] = {FEATS[j]: float(d[j]) for j in top}
-        print(f"  {name:<38} " + ", ".join(f"{FEATS[j]} {d[j]:+.2f}" for j in top))
-    OUT.write_text(json.dumps({"theta": theta.detach().numpy().tolist(), "kl": a.kl, "summary": summary, "changes": changes}))
+    for name in ("MARL", "MARL + spacing"):
+        print(f"what {name} changes vs the real run (mean feature change per group):")
+        changes[name] = {}
+        for g, gname in enumerate(st["groups"]):
+            if not shift[name][g]:
+                continue
+            dd = np.concatenate(shift[name][g]).mean(0)
+            top = np.argsort(-np.abs(dd))[:3]
+            changes[name][gname] = {FEATS[j]: float(dd[j]) for j in top}
+            print(f"  {gname:<38} " + ", ".join(f"{FEATS[j]} {dd[j]:+.2f}" for j in top))
+    OUT.write_text(json.dumps({"theta": th_free.numpy().tolist(), "thetaSpacing": th_con.numpy().tolist(), "lambda": lam,
+                               "crowdM": crowd_m, "kl": a.kl, "summary": summary, "changes": changes}))
     print(f"saved {OUT}")
 
 

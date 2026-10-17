@@ -238,7 +238,7 @@ Trang `runs.html` mặc định mở phần này ("FRA-DEN · learned objective"
 3. Đưa top chỗ lệch cho HLV chấm (giữ hay bỏ) để đo độ hữu ích.
 4. Dùng mục tiêu học được làm phần thưởng cho MARL: tác nhân học được "chạy như cầu thủ thật" trước, rồi mới tối ưu thêm.
 
-## Hướng 1, tiếp theo: vai trò chi tiết, phong cách đội, MARL
+## Hướng 1, tiếp theo: vai trò chi tiết, phong cách đội, MARL một bước và nhiều bước
 
 Phần này dùng các tập lựa chọn tính sẵn cho **cả 64 trận** (`python -m h2predict.irl --cache`): 58 trận để học, 6 trận để kiểm tra.
 
@@ -275,16 +275,16 @@ Cải thiện có, nhưng nhỏ. Trận Pháp – Đan Mạch: 68,1%.
 - Trong 10% chỗ lệch lớn nhất, phương án "chuẩn" có EPV cao hơn ở 48% số trường hợp.
 
 ### 3. MARL với phần thưởng là mục tiêu học được — `h2predict/marl.py`
-- **Trò chơi:** ở mỗi khoảnh khắc, mọi cầu thủ của cả hai đội cùng lúc chọn một trong các hướng cùng quãng đường. Phần thưởng của mỗi người là mục tiêu của nhóm họ, **tính trên cấu hình chung**: khoảng cách tới đồng đội và đối thủ, và đường việt vị, phụ thuộc vào việc người khác đi đâu.
+- **Trò chơi:** ở mỗi khoảnh khắc, mọi cầu thủ của cả hai đội cùng lúc chọn một trong các hướng cùng quãng đường. Phần thưởng của mỗi người là mục tiêu của nhóm họ, **tính trên cấu hình chung** (`h2predict/game.py`): khoảng cách tới đồng đội và đối thủ, đường việt vị, và việc **có trống để nhận chuyền không** (mô hình chuyền của Hướng 3, tính theo chỗ hậu vệ thật sự đứng, tức là đường chuyền) đều phụ thuộc vào việc người khác đi đâu.
 - **Cách học:** mỗi nhóm có một chính sách softmax, khởi đầu đúng bằng chính sách bắt chước (IRL). Các tác nhân học độc lập bằng policy gradient, dùng baseline phản thực tính chính xác trên mọi lựa chọn của mình, cộng phạt KL (0,3) để không lệch xa hành vi thật. Học từ 40.234 khoảnh khắc, kiểm tra trên 4.157 khoảnh khắc chưa học.
 
 | | Phần thưởng (mục tiêu học được, cấu hình chung) | Xác suất chọn đúng đường chạy thật | EPV của đội hình (kiểm tra độc lập) |
 |---|---|---|---|
-| Đường chạy thật | +0,509 | (1) | +0,0205 |
-| Bắt chước (IRL) | +0,386 | 0,124 | +0,0253 |
-| **MARL** | **+0,631** | **0,166** | +0,0248 |
+| Đường chạy thật | +0,508 | (1) | +0,0205 |
+| Bắt chước (IRL) | +0,385 | 0,124 | +0,0253 |
+| **MARL** | **+0,630** | **0,166** | +0,0248 |
 
-Độ nhạy theo trọng số KL: 0,1 cho phần thưởng +0,688 và xác suất 0,180; 1,0 cho +0,490 và 0,142. EPV gần như không đổi.
+Độ nhạy theo trọng số KL (bản chưa tính đường chuyền động): 0,1 cho phần thưởng +0,688 và xác suất 0,180; 1,0 cho +0,490 và 0,142. EPV gần như không đổi.
 
 **Phối hợp thay đổi gì** (lựa chọn của MARL trừ đường chạy thật, trung bình theo nhóm):
 - Gần như mọi nhóm đều **áp sát bóng hơn 4–6 m** và **đứng gần đường bóng–khung thành hơn 4–6 m**.
@@ -295,8 +295,66 @@ Cải thiện có, nhưng nhỏ. Trận Pháp – Đan Mạch: 68,1%.
 **Đọc kết quả cho đúng:**
 - MARL vượt hành vi thật theo chính mục tiêu của cầu thủ, và vẫn gần hành vi thật hơn cả bản bắt chước.
 - EPV của đội hình cao hơn đội hình thật (+0,025 so với +0,021). Nhưng bản bắt chước cũng đạt mức đó, nên phần tăng đến từ **việc làm theo mục tiêu học được**, chưa chứng minh được là đến từ **phối hợp**.
-- Mục tiêu học được chỉ phạt nhẹ việc đứng sát đồng đội, nên phiên bản phối hợp có thể **co cụm quá mức**. Ví dụ, cầu thủ chạy cánh khi mất bóng đứng gần đồng đội hơn 3 m. Cần thêm ràng buộc khoảng cách và đường chuyền.
+- Mục tiêu học được chỉ phạt nhẹ việc đứng sát đồng đội, nên khi mọi người cùng tối ưu thì đội **co cụm**: 23,8% cầu thủ kết thúc đường chạy sát một đồng đội, gấp đôi thực tế. Xem mục 4.
 - Đây là trò chơi **một bước** (8 s) với mục tiêu **mô tả** cầu thủ World Cup, chưa phải mô phỏng cả pha bóng.
+
+### 4. Ràng buộc giãn cách — `h2predict/marl.py`
+- **"Quá gần" lấy từ dữ liệu thật:** khi mọi người ở đúng chỗ họ thật sự chạy tới (các trận train), 10% cầu thủ kết thúc cách đồng đội gần nhất dưới **3,3 m** (trung vị 8,7 m). Ngưỡng 3,3 m và tỉ lệ 10% đều lấy từ đây, không tự đặt.
+- **Cách làm:** RL có ràng buộc (Lagrangian). Phần thưởng trừ λ × (1 nếu kết thúc dưới 3,3 m cạnh đồng đội). λ tự tăng khi tỉ lệ co cụm vượt 10% và giảm khi dưới (dual ascent). Hội tụ: tỉ lệ 10,8%, λ = 4,82.
+
+| Kiểm tra trên 4.157 khoảnh khắc chưa học | Phần thưởng | P(đường chạy thật) | Co cụm (< 3,3 m) | Khoảng cách TB tới đồng đội gần nhất | EPV đội hình |
+|---|---|---|---|---|---|
+| Đường chạy thật | +0,508 | (1) | 10,9% | 10,0 m | +0,0205 |
+| Bắt chước (IRL) | +0,385 | 0,124 | 23,9% | 8,8 m | +0,0253 |
+| MARL | +0,630 | 0,166 | 23,8% | 8,9 m | +0,0248 |
+| **MARL + giãn cách** | **+0,569** | 0,159 | **11,4%** | **10,8 m** | **+0,0250** |
+
+Phần thưởng tính bằng cách lấy mẫu nước đi của mọi người. Ba cột sau dùng lựa chọn có xác suất cao nhất của mỗi chính sách.
+
+- **Giữ giãn cách như thật chỉ tốn ít:** phần thưởng giảm 0,061 nhưng vẫn hơn đường chạy thật 0,061, EPV giữ nguyên. Vậy lời khuyên "gọn lại" của mục 3 phần lớn là do co cụm, không phải điều cần học.
+- **Bản bắt chước cũng co cụm (23,9%).** Lý do: mỗi người chọn phương án tốt nhất của mình mà không thấy người khác, nên nhiều người cùng dồn về một chỗ. Đây là lý do cần phối hợp có ràng buộc, chứ không chỉ bắt chước.
+- **Thay đổi so với đường chạy thật** (trung bình theo nhóm):
+  - *Có bóng:* hậu vệ biên, tiền vệ phòng ngự, cầu thủ chạy cánh và tiền đạo **giãn rộng**: xa đồng đội gần nhất hơn 3,6–5,6 m, xa đường bóng–khung thành hơn 3,4–5,4 m. Tiền vệ phòng ngự, cánh và tiền đạo còn **dâng trước bóng** thêm 4–6 m. Tiền vệ trung tâm thì **áp vào bóng 4,5 m** để hỗ trợ. Tức là chiều rộng và chiều sâu khi có bóng.
+  - *Mất bóng:* tiền đạo **ép bóng** (gần bóng hơn 4,8 m, gần đường bóng–khung thành hơn 4,3 m), tiền vệ trung tâm cũng vậy (3,5 m), trung vệ **lùi về sau bóng** thêm 3,5 m. Cánh và tiền vệ tấn công về gần vị trí quen hơn 4–5 m.
+  - *Chỗ cần HLV xem:* khi mất bóng, hậu vệ biên và tiền vệ phòng ngự lại đứng **xa bóng hơn 4–6 m**. Có thể ràng buộc đang dồn phần giãn cách vào những người có nhiều khoảng trống nhất, chứ không phải điều đội nên làm.
+
+### 5. MARL nhiều bước — `h2predict/marl_multi.py`
+**Cách làm**
+- **Môi trường:** model dự báo đóng vai "phần còn lại của trận đấu" (bản có điều kiện `h2_cond.pt`, dùng như model thường). Mỗi episode bắt đầu từ một khoảnh khắc thật, với 64 s lịch sử thật. Cứ mỗi 4 s, model dự báo 4 s tới cho mọi người. Mỗi cầu thủ trên sân (trừ thủ môn) chọn: đi theo dự báo, hoặc chạy cùng quãng đường theo 1 trong 12 hướng. Bóng đi theo người giữ bóng mà model dự báo. Khung hình mới được nối vào lịch sử, nên ở bước sau model **phản ứng** với những gì cầu thủ vừa làm. 3 bước = 12 s.
+- **Phần thưởng mỗi bước:** mục tiêu học được (giai đoạn × vai trò chi tiết) trên cấu hình chung, cùng ràng buộc giãn cách của mục 4 (λ hội tụ ở 2,26). Feature "EPV của đội" không nằm trong phần thưởng, vì trọng số của nó nhỏ: trung bình 0,03, so với 0,10–0,21 của các feature chính. Nhờ vậy EPV sau 12 s là phép kiểm tra hoàn toàn độc lập.
+- **Cách học:** phần thưởng của bước hiện tại tính chính xác trên mọi lựa chọn của mình. Hậu quả ở các bước sau ước lượng bằng REINFORCE (baseline là trung bình của batch), chiết khấu 0,9. Phạt KL 0,3 về chính sách bắt chước. Học trên 20.962 episode (58 trận, cứ 16 s một episode), kiểm tra trên 2.160 episode của 6 trận chưa học. Như IRL, bỏ 2,7% khoảnh khắc mà 64 s lịch sử không thấy bóng.
+- **Mốc so sánh công bằng: "đường chạy thật, phát lại".** Cầu thủ đi đúng chỗ họ thật sự đi sau mỗi 4 s, model chơi phần còn lại. 12 s ghi hình thật chỉ để tham khảo, vì đó là một thế giới khác: người khác và bóng ở vị trí thật, kể cả các đường chuyền dài. Phần thưởng ở đó thấp hơn nhiều (+0,286), vì vị trí dự báo là trung bình của 6 kịch bản nên "gọn" hơn thực tế.
+- **EPV** đo từ phía đội cầm bóng lúc đầu (nếu bóng đã đổi chủ thì đổi dấu). Cao hơn nghĩa là tốt cho đội tấn công, xấu cho đội phòng ngự.
+
+**Kết quả 1: cả hai đội cùng dùng một chính sách** (2.160 episode, 6 trận chưa học)
+
+| | Phần thưởng mỗi bước | Bước cuối | Co cụm | EPV sau 12 s |
+|---|---|---|---|---|
+| 12 s ghi hình thật (chỉ tham khảo) | +0,286 | +0,283 | 12,7% | +0,0205 |
+| Đường chạy thật, phát lại | +0,512 | +0,524 | 12,8% | +0,0205 |
+| Đi theo dự báo | +0,557 | +0,587 | 13,6% | +0,0215 |
+| Bắt chước (IRL) | +0,483 | +0,520 | 14,4% | +0,0190 |
+| MARL một bước, dùng ở mọi bước | +0,581 | +0,632 | 10,6% | +0,0205 |
+| **MARL nhiều bước** | **+0,640** | **+0,710** | **10,3%** | +0,0219 |
+
+So sánh ghép cặp trên cùng episode (khoảng tin cậy 95%, bootstrap theo episode):
+- MARL nhiều bước − MARL một bước: phần thưởng **+0,060** [+0,057; +0,062], EPV +0,0014 [+0,0010; +0,0018].
+- MARL nhiều bước − đường chạy thật phát lại: phần thưởng **+0,129** [+0,123; +0,134], EPV +0,0014 [−0,0003; +0,0033], tức là không khác.
+
+**Kết quả 2: chỉ một đội dùng MARL nhiều bước, đội kia đi đúng đường chạy thật** (so với khi cả hai đội cùng phát lại đường chạy thật)
+
+| | Phần thưởng của đội dùng MARL | Phần thưởng của đội kia | EPV của đội cầm bóng lúc đầu |
+|---|---|---|---|
+| Chỉ đội tấn công | +0,050 [+0,044; +0,055] | −0,047 [−0,051; −0,044] | **−0,0035** [−0,0048; −0,0022] |
+| Chỉ đội phòng ngự | +0,076 [+0,070; +0,082] | −0,062 [−0,067; −0,057] | **+0,0049** [+0,0041; +0,0058] |
+
+**Đọc kết quả**
+1. **Lên kế hoạch 12 s có ích, theo mục tiêu học được.** MARL nhiều bước hơn chính sách một bước +0,060, cách biệt lớn dần về cuối (bước cuối +0,710 so với +0,632), và vẫn giữ giãn cách như thật (10,3%).
+2. **Khoảng một nửa mức tăng đến từ việc đối thủ cũng chơi theo cùng chính sách.** Khi cả hai đội cùng dùng MARL, mỗi đội tăng khoảng +0,13. Khi đối thủ là cầu thủ thật, đội dùng MARL chỉ tăng +0,05 (tấn công) hoặc +0,08 (phòng ngự), và đối thủ mất gần đúng chừng đó. Nghĩa là trong tự đấu, hai đội "chiều" nhau.
+3. **Theo EPV, MARL kém cầu thủ thật ở cả hai đầu sân.** Đội tấn công dùng MARL tạo ít nguy hiểm hơn đường chạy thật: −0,0035, khoảng 17% mức EPV +0,0205. Đội phòng ngự dùng MARL để đối thủ nguy hiểm hơn: +0,0049, khoảng 24%. Khi cả hai cùng dùng thì hai hiệu ứng triệt tiêu, nên bảng 1 trông như "không khác".
+4. **Thay đổi so với nước đi dự báo rất nhỏ** (trung bình dưới 1 m mỗi nhóm) và cùng hướng với mục 4. Có bóng: hậu vệ biên, tiền vệ phòng ngự và cánh giãn rộng hơn; tiền vệ trung tâm áp vào bóng. Mất bóng: tiền đạo và tiền vệ trung tâm ép bóng hơn.
+
+**Kết luận của Hướng 1.** Mục tiêu học được **mô tả** tốt điều cầu thủ thường làm: đường chạy thật thắng 66–67% phương án. Nhưng tối ưu nó mạnh hơn, kể cả có phối hợp và lên kế hoạch, làm lối chơi **kém đi** theo một thước đo độc lập (EPV), ở cả tấn công lẫn phòng ngự. Cầu thủ World Cup có những lựa chọn theo tình huống mà mục tiêu tuyến tính 11 feature chưa nắm được, và những lựa chọn "lệch chuẩn" đó có giá trị. Muốn có lời khuyên "tốt hơn", phần thưởng phải chứa **kết quả** (EPV, cú sút, giá trị đường chuyền). Mục tiêu học được chỉ nên giữ vai trò ràng buộc để hành vi vẫn giống người.
 
 ### Về chân thuận
 - **Dữ liệu chưa có.** `players.csv` và roster của PFF chỉ có chiều cao, số áo và vị trí chi tiết (CF, RW, RB, CM…), không có chân thuận. Muốn dùng thì cần nguồn ngoài, và phải xem điều khoản sử dụng của nguồn đó.
@@ -310,15 +368,18 @@ Cải thiện có, nhưng nhỏ. Trận Pháp – Đan Mạch: 68,1%.
 - **Giá trị chỉ là đại diện gần đúng.** Nó chưa tính đường chuyền cụ thể, nhiệm vụ phòng ngự, thể lực hay chỉ đạo của HLV. Cầu thủ chạy chỗ còn để kéo người, giữ cân bằng hay hỗ trợ, và mô hình giá trị chưa thấy những điều đó.
 - **Đường chạy là đường thẳng, độ phân giải 4 s**, và bóng không được lên kế hoạch lại.
 - Việt vị chỉ ước lượng bằng hàng thủ dự đoán ở +8 s.
+- **MARL dùng model dự báo làm môi trường.** Phản ứng của model là tương quan và còn yếu. Vị trí dự báo là trung bình của 6 kịch bản, nên gọn hơn thực tế. Bóng đi theo người giữ, chưa có đường chuyền được lên kế hoạch, và mỗi bước dài 4 s.
+- **Mục tiêu học được là mô tả, không phải chuẩn mực:** nó cho biết cầu thủ World Cup thường làm gì, không cho biết điều gì tạo ra bàn thắng (mục 5).
 - **Chưa có HLV kiểm chứng.** Mọi gợi ý chỉ là giả thuyết để HLV xem lại.
 
 ## Bước tiếp theo
 
-1. **Chấm đường chạy qua lựa chọn chuyền mà nó tạo ra**, thay vì giá trị của cả trạng thái: giá trị = P(chuyền tới người chạy thành công) × EPV khi người đó nhận bóng. Cách này **kiểm chứng được bằng đường chuyền thật**: người đứng ở vị trí có giá trị cao có thật sự được chuyền nhiều hơn, và tạo ra EPV cao hơn sau khi nhận không.
-2. **Kiểm chứng bằng kết quả trận**: những pha mà đường chạy thật "kém" theo mô hình có thật sự dẫn tới ít cú sút hơn không. Cần chạy trên nhiều trận, khoảng 12 phút mỗi trận.
-3. Làm phản ứng mạnh và đúng hơn: bước thời gian 1 s; train với nhiều mẫu đường chạy bất thường; đo mức "bám người" so với dữ liệu thật.
-4. Đưa top bước ngoặt cho HLV chấm: giữ hay bỏ, vì sao. Đo tỉ lệ gợi ý hữu ích.
-5. Khi model phản ứng đủ tin cậy, dùng nó làm môi trường cho MARL.
+1. **Phần thưởng có kết quả:** mục tiêu học được + β × thay đổi EPV (hoặc giá trị đường chuyền của Hướng 3). Chọn β sao cho hành vi vẫn gần cầu thủ thật, rồi kiểm tra lại bằng phép tách công/thủ của mục 5.
+2. **Học với đối thủ là cầu thủ thật** (phát lại), không chỉ tự đấu, để hai đội không "chiều" nhau.
+3. **Cho bóng được chuyền trong mô phỏng:** người giữ bóng chọn người nhận bằng mô hình chọn đường chuyền của Hướng 3.
+4. **Kiểm chứng bằng kết quả trận:** những pha mà đường chạy thật "kém" theo mô hình có thật sự dẫn tới ít cú sút hơn không.
+5. Làm phản ứng mạnh và đúng hơn: bước thời gian 1 s; train với nhiều mẫu đường chạy bất thường; đo mức "bám người" so với dữ liệu thật.
+6. Đưa top bước ngoặt cho HLV chấm: giữ hay bỏ, vì sao. Đo tỉ lệ gợi ý hữu ích.
 
 ## Chạy lại
 
@@ -351,6 +412,9 @@ Cải thiện có, nhưng nhỏ. Trận Pháp – Đan Mạch: 68,1%.
 ```
 ```bash
 .venv/bin/python -m h2predict.marl
+```
+```bash
+.venv/bin/python -m h2predict.marl_multi
 ```
 ```bash
 .venv/bin/python -m h2predict.runs --match pff:3834 --value pass
