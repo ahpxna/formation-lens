@@ -17,7 +17,7 @@ const Y = (y) => -y;
 const ok = (p) => p && p[0] != null && p[1] != null;
 const clock = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const pct = (v) => `${Math.round(100 * v)}%`;
-const label = (a) => `${state.doc.teams[a < N_TEAM ? 0 : 1]} #${a % N_TEAM}`;
+const label = (a, who) => `${state.doc.teams[a < N_TEAM ? 0 : 1]} #${a % N_TEAM}${who && who.name ? ` ${who.name}${who.position ? ` (${who.position})` : ""}` : ""}`;
 const colour = (a) => (a === BALL ? "#ffffff" : state.doc.colors[a < N_TEAM ? 0 : 1]);
 
 function drawPitch(g) {
@@ -66,7 +66,7 @@ function draw() {
   arrow(g, [start[a], ...tp.best.run], { stroke: "#8fd16a", "stroke-width": 0.65, "stroke-dasharray": "1.4 0.8" });
   if (state.doc.value === "irl") {
     const costly = tp.epvDelta > 0 ? `the better run would also have raised the team's EPV (${tp.epvDelta >= 0 ? "+" : ""}${tp.epvDelta.toFixed(3)}): worth a look` : `the real run kept a higher team EPV (${tp.epvDelta.toFixed(3)}): possibly a deliberate, creative choice`;
-    $("#caption").innerHTML = `<b>${label(a)}</b> at ${clock(tp.clock)}, ${tp.group}. White = the real run (8 s); dashed green = the same-length run that best fits what players in this role usually aim for (learned from 24 other matches). ` +
+    $("#caption").innerHTML = `<b>${label(a, tp)}</b> at ${clock(tp.clock)}, ${tp.group}. White = the real run (8 s); dashed green = the same-length run that best fits what players in this role usually aim for (learned from ${state.doc.summary.trainMatches || "other"} other matches). ` +
       `Hollow circles = where the others are forecast 8 s later (the same for both runs). Gap to that objective ${tp.gain.toFixed(2)}, mostly: ${tp.why || "several small things"}. ` +
       `By EPV, ${costly}. The real run beat ${pct(tp.realBeats)} of the ${tp.nAlts} alternatives.`;
     return;
@@ -81,11 +81,11 @@ function renderList() {
   const d = state.doc;
   const s = d.summary;
   if (d.value === "irl") {
-    $("#summary").innerHTML = `${s.playerMoments} runs of both teams, in and out of possession, scored with the objective learned from 24 other matches (inverse RL). ` +
+    $("#summary").innerHTML = `${s.playerMoments} runs of both teams, in and out of possession, scored with the objective learned from ${s.trainMatches || "other"} other matches (inverse RL, by detailed role). ` +
       `On this held-out match the real runs beat <b>${pct(s.realRunBeatsAlternatives)}</b> of the same-length alternatives (chance: 50%). Largest gaps between a run and the player's own group objective:`;
-    $("#list").innerHTML = d.turningPoints.map((tp, k) => `<button class="tp${k === state.sel ? " on" : ""}" data-k="${k}"><b>${clock(tp.clock)}</b> · ${label(tp.agent)}
+    $("#list").innerHTML = d.turningPoints.map((tp, k) => `<button class="tp${k === state.sel ? " on" : ""}" data-k="${k}"><b>${clock(tp.clock)}</b> · ${label(tp.agent, tp)}
       <small>${tp.group} · ${tp.why || ""} · EPV ${tp.epvDelta >= 0 ? "+" : ""}${tp.epvDelta.toFixed(3)}</small></button>`).join("");
-    $("#advice").innerHTML = (d.advice || []).slice(0, 8).map((x) => `<li><b>${label(x.agent)}</b>: clearly below their group's objective in ${pct(x.better)} of ${x.moments} runs, mostly ${x.why || "mixed reasons"}; the better run also had a higher team EPV in ${pct(x.costlyShare)} of those.</li>`).join("");
+    $("#advice").innerHTML = (d.advice || []).slice(0, 8).map((x) => `<li><b>${label(x.agent, x)}</b>: clearly below their group's objective in ${pct(x.better)} of ${x.moments} runs, mostly ${x.why || "mixed reasons"}; the better run also had a higher team EPV in ${pct(x.costlyShare)} of those.</li>`).join("");
     document.querySelectorAll("[data-k]").forEach((b) => (b.onclick = () => { state.sel = +b.dataset.k; renderList(); draw(); }));
     return;
   }

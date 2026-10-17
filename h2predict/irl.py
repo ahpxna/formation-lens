@@ -203,8 +203,10 @@ def report(name, u, mask, g):
     return float(b.mean())
 
 
-def deviations(m, sets, W, mu, sd, step, top_n=10, gap_s=12.0):
-    """Where real runs fell short of the player's own group objective, why, and whether EPV agrees."""
+def deviations(m, sets, W, mu, sd, step, top_n=10, gap_s=12.0, group_names=GROUPS, roles=None):
+    """Where real runs fell short of the player's own group objective, why, and whether EPV agrees. With `roles`
+    (h2predict.roles) every entry also carries who was in the slot then (name, position)."""
+    from .roles import occupant
     X, mask, g = pad(sets)
     z = (X - mu) / sd
     u = np.where(mask, (z * W[g][:, None, :]).sum(-1), -np.inf)
@@ -227,7 +229,8 @@ def deviations(m, sets, W, mu, sd, step, top_n=10, gap_s=12.0):
             end, start = s["ends"][best[i]], s["start"]
             rnd = lambda arr: [[None if not np.isfinite(v) else round(float(v), 1) for v in q] for q in arr]
             picked.append({"_p": p, "view": f"half{p}", "t": round(float(t), 2), "clock": round(45 * 60 * (p - 1) + t, 1),
-                           "team": s["team"], "agent": s["agent"], "group": GROUPS[s["group"]],
+                           "team": s["team"], "agent": s["agent"], "group": group_names[s["group"]],
+                           **who(roles, m.name, s["agent"], s["f0"], occupant),
                            "gain": round(float(regret[i]), 3), "ctReal": round(float(u[i, 0]), 3), "ctBest": round(float(u[i, best[i]]), 3),
                            "robust": round(float(np.exp(u[i, best[i]]) / np.exp(u[i][mask[i]]).sum()), 2),
                            "realBeats": round(float(b[i]), 2), "nAlts": int(mask[i].sum() - 1),
@@ -247,7 +250,8 @@ def deviations(m, sets, W, mu, sd, step, top_n=10, gap_s=12.0):
             continue
         hi = mine[regret[mine] >= np.quantile(regret, 0.75)]  # this player's clearly sub-par runs
         c = contrib[hi].clip(min=0).mean(0) if len(hi) else np.zeros(len(FEATS))
-        advice.append({"agent": int(a), "moments": int(len(mine)), "better": round(float(len(hi) / len(mine)), 2),
+        last = max(sets[i]["f0"] for i in mine)
+        advice.append({"agent": int(a), **who(roles, m.name, a, last, occupant), "moments": int(len(mine)), "better": round(float(len(hi) / len(mine)), 2),
                        "realBeats": round(float(b[mine].mean()), 2), "why": why(c), "forward": 0.0, "inside": 0.0,
                        "costlyShare": round(float(np.mean(d_epv[hi] > 0)) if len(hi) else 0.0, 2)})
     advice.sort(key=lambda x: -x["better"])
@@ -255,14 +259,56 @@ def deviations(m, sets, W, mu, sd, step, top_n=10, gap_s=12.0):
     return picked, advice, float(b.mean()), costly
 
 
+CACHE = Path("checkpoints/irl_sets")
+
+
+def who(roles, match_name, slot, frame, occupant):
+    o = occupant(roles, match_name, int(slot), int(frame)) if roles else None
+    return {"name": o["name"], "position": o["position"]} if o else {}
+
+
+def save_sets(path, m, sets):
+    """Choice sets of one match, padded, with what later steps need (roles, teams, styles, MARL)."""
+    X, mask, g = pad(sets)
+    n = X.shape[1]
+    ends = np.full((len(sets), n, 2), np.nan, np.float32)
+    for i, s in enumerate(sets):
+        ends[i, :len(s["ends"])] = s["ends"]
+    np.savez_compressed(path, X=X.astype(np.float32), mask=mask, group=g, agent=np.array([s["agent"] for s in sets]),
+                        team=np.array([s["team"] for s in sets]), f0=np.array([s["f0"] for s in sets]), ends=ends,
+                        start=np.array([s["start"] for s in sets], np.float32),
+                        scene=np.array([s["scene"] for s in sets], np.float32), name=m.name)
+
+
+def cache_all(a):
+    """Choice sets for every PFF match (training and held-out), one file each, so roles, team styles and MARL
+    reuse them instead of recomputing the forecasts."""
+    dev = pick_device(a.device)
+    model, cfg = load_cond(a.ckpt, dev)
+    net, opt = load_epv(dev), load_options()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    games = Config()
+    for split in a.splits:
+        for m in load_games(games, [f"pff:{split}"]):
+            path = CACHE / f"{m.name.split()[0]}.npz"
+            if path.exists():
+                continue
+            save_sets(path, m, match_sets(m, cfg, model, net, opt, dev, a.every_s))
+            print(f"  cached {m.name} ({split})", flush=True)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
+    ap.add_argument("--cache", action="store_true", help="only compute and save the choice sets of all matches")
+    ap.add_argument("--splits", nargs="+", default=["train", "val"], help="with --cache: which PFF splits")
     ap.add_argument("--train-matches", type=int, default=24)
     ap.add_argument("--every-s", type=float, default=8.0)
     ap.add_argument("--ckpt", default="checkpoints/h2_cond.pt")
     ap.add_argument("--match", default="pff_3834 FRA-DEN", help="held-out match to export deviations for")
     ap.add_argument("--device", default="auto")
     a = ap.parse_args(argv)
+    if a.cache:
+        return cache_all(a)
     dev = pick_device(a.device)
     model, cfg = load_cond(a.ckpt, dev)
     net, opt = load_epv(dev), load_options()

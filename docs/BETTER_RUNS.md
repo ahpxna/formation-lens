@@ -238,6 +238,72 @@ Trang `runs.html` mặc định mở phần này ("FRA-DEN · learned objective"
 3. Đưa top chỗ lệch cho HLV chấm (giữ hay bỏ) để đo độ hữu ích.
 4. Dùng mục tiêu học được làm phần thưởng cho MARL: tác nhân học được "chạy như cầu thủ thật" trước, rồi mới tối ưu thêm.
 
+## Hướng 1, tiếp theo: vai trò chi tiết, phong cách đội, MARL
+
+Phần này dùng các tập lựa chọn tính sẵn cho **cả 64 trận** (`python -m h2predict.irl --cache`): 58 trận để học, 6 trận để kiểm tra.
+
+### 1. Vai trò chi tiết — `h2predict/roles.py`
+- Bộ chuyển đổi không lưu số áo, nên bản đồ số áo → ô được **dựng lại bằng cách khớp vị trí 10 giây đầu** trong tracking gốc với các ô (thuật toán Hungarian). Kết quả: 1.408/1.408 ô, sai số trung vị 0,14 m.
+- Thêm **563 lần thay người** từ dữ liệu sự kiện. Mỗi ô ở mỗi thời điểm đều biết là ai, đá vị trí gì.
+- Ví dụ lỗi được sửa: "DEN #6 phút 95:44" trước đây bị chấm theo chuẩn tiền đạo, nhưng thật ra là Nørgaard, tiền vệ phòng ngự vào thay người chạy cánh.
+- 7 vai trò: trung vệ, hậu vệ biên (gồm wing-back), tiền vệ phòng ngự, tiền vệ trung tâm, tiền vệ tấn công, cánh (LW/RW/LM/RM), tiền đạo. Nhân với có bóng / mất bóng thành 14 nhóm.
+
+| Cách chia nhóm (học 58 trận, kiểm tra 6 trận) | Đường chạy thật thắng | Log-loss |
+|---|---|---|
+| Theo tuyến (6 nhóm) | 66,0% | 2,1966 |
+| **Theo vai trò chi tiết (14 nhóm)** | **66,6%** | **2,1914** |
+
+Cải thiện có, nhưng nhỏ. Trận Pháp – Đan Mạch: 68,1%.
+
+### 2. Phong cách đội — `h2predict/styles.py`
+- Mục tiêu của một đội = chuẩn chung của nhóm + **độ lệch riêng của đội**, bị kéo về 0 (partial pooling). Độ lệch chỉ học trên các trận train của đội đó.
+- Kiểm tra trên 65.311 đường chạy ở 6 trận chưa học: mục tiêu riêng của đội làm **log-loss giảm 0,024 mỗi đường chạy** (2,1914 → 2,1672), và đường chạy thật thắng 67,0% thay vì 66,6%. Mức giảm tăng theo lượng dữ liệu: 0,019 khi có 21 trận, 0,024 khi có 58 trận.
+- Kết luận: **phong cách đội là thật và giữ được từ trận này sang trận khác.**
+
+| Đội | Phong cách nổi bật (so với chuẩn chung, theo độ lệch chuẩn) |
+|---|---|
+| Pháp | Khi mất bóng, trung vệ và hậu vệ biên đứng **phía sau bóng** nhiều hơn rõ (+0,50 / +0,47): lùi sâu rồi phản công |
+| Thụy Sĩ | Hàng thủ lùi sâu (+0,44); tiền vệ tấn công pressing (−0,43) |
+| Hà Lan | Tiền đạo luôn đứng trước bóng (−0,38); tiền vệ tấn công pressing (−0,33) |
+| Qatar | Hậu vệ biên thu hẹp vào trong (−0,41); tiền vệ trung tâm áp sát bóng (−0,35) |
+| Bỉ | Hậu vệ biên và trung vệ lùi sâu khi mất bóng |
+| Uruguay, Ghana | Tiền vệ trung tâm pressing; trung vệ đứng phía sau bóng |
+
+**Chỗ lệch có tên cầu thủ** (Pháp – Đan Mạch, theo vai trò chi tiết):
+- Eriksen chiếm 5/10 pha lệch lớn nhất, phần lớn khi Đan Mạch mất bóng. Anh ấy đứng xa bóng và lệch khỏi đường bóng–khung thành, tức không áp sát cũng không che. Ví dụ phút 59:52 và 72:56.
+- Sau đó là Upamecano, Rabiot, Konaté (vào thay Varane), Koundé.
+- Trong 10% chỗ lệch lớn nhất, phương án "chuẩn" có EPV cao hơn ở 48% số trường hợp.
+
+### 3. MARL với phần thưởng là mục tiêu học được — `h2predict/marl.py`
+- **Trò chơi:** ở mỗi khoảnh khắc, mọi cầu thủ của cả hai đội cùng lúc chọn một trong các hướng cùng quãng đường. Phần thưởng của mỗi người là mục tiêu của nhóm họ, **tính trên cấu hình chung**: khoảng cách tới đồng đội và đối thủ, và đường việt vị, phụ thuộc vào việc người khác đi đâu.
+- **Cách học:** mỗi nhóm có một chính sách softmax, khởi đầu đúng bằng chính sách bắt chước (IRL). Các tác nhân học độc lập bằng policy gradient, dùng baseline phản thực tính chính xác trên mọi lựa chọn của mình, cộng phạt KL (0,3) để không lệch xa hành vi thật. Học từ 40.234 khoảnh khắc, kiểm tra trên 4.157 khoảnh khắc chưa học.
+
+| | Phần thưởng (mục tiêu học được, cấu hình chung) | Xác suất chọn đúng đường chạy thật | EPV của đội hình (kiểm tra độc lập) |
+|---|---|---|---|
+| Đường chạy thật | +0,509 | (1) | +0,0205 |
+| Bắt chước (IRL) | +0,386 | 0,124 | +0,0253 |
+| **MARL** | **+0,631** | **0,166** | +0,0248 |
+
+Độ nhạy theo trọng số KL: 0,1 cho phần thưởng +0,688 và xác suất 0,180; 1,0 cho +0,490 và 0,142. EPV gần như không đổi.
+
+**Phối hợp thay đổi gì** (lựa chọn của MARL trừ đường chạy thật, trung bình theo nhóm):
+- Gần như mọi nhóm đều **áp sát bóng hơn 4–6 m** và **đứng gần đường bóng–khung thành hơn 4–6 m**.
+- Mọi nhóm đều **về gần vị trí quen hơn**.
+- Tiền đạo và tiền vệ tấn công khi mất bóng **lùi về phía sau bóng khoảng 3 m**.
+- Thông điệp chung: **đội hình gọn hơn và kỷ luật hơn**, không phải "lao lên".
+
+**Đọc kết quả cho đúng:**
+- MARL vượt hành vi thật theo chính mục tiêu của cầu thủ, và vẫn gần hành vi thật hơn cả bản bắt chước.
+- EPV của đội hình cao hơn đội hình thật (+0,025 so với +0,021). Nhưng bản bắt chước cũng đạt mức đó, nên phần tăng đến từ **việc làm theo mục tiêu học được**, chưa chứng minh được là đến từ **phối hợp**.
+- Mục tiêu học được chỉ phạt nhẹ việc đứng sát đồng đội, nên phiên bản phối hợp có thể **co cụm quá mức**. Ví dụ, cầu thủ chạy cánh khi mất bóng đứng gần đồng đội hơn 3 m. Cần thêm ràng buộc khoảng cách và đường chuyền.
+- Đây là trò chơi **một bước** (8 s) với mục tiêu **mô tả** cầu thủ World Cup, chưa phải mô phỏng cả pha bóng.
+
+### Về chân thuận
+- **Dữ liệu chưa có.** `players.csv` và roster của PFF chỉ có chiều cao, số áo và vị trí chi tiết (CF, RW, RB, CM…), không có chân thuận. Muốn dùng thì cần nguồn ngoài, và phải xem điều khoản sử dụng của nguồn đó.
+- **Không làm mất khả năng tổng quát hóa**, vì đó là một đặc điểm chung (trái / phải / cả hai), không phải danh tính từng cầu thủ. Điều kiện là lúc train phải thỉnh thoảng giấu nó đi ("không rõ"), để model vẫn dùng được khi thiếu thông tin. Với video giải nghiệp dư, HLV có thể tự nhập.
+- **Độ chính xác.** Với vị trí 4–8 s nói chung, dự kiến chỉ tăng ít. Nó có thể giúp ở vài tình huống cụ thể (tiền vệ cánh bó vào trong bằng chân thuận, hậu vệ biên chồng biên hay đi trong, nhận bóng bên nào), nên hữu ích cho inverse RL và mô hình chọn đường chuyền hơn là cho model dự báo. Phải đo bằng ablation (có / không) trên trận chưa học.
+- **Đã làm trước thứ có sẵn:** vị trí chi tiết lấy từ roster (`h2predict/roles.py`). Bản đồ số áo → ô được dựng lại bằng cách khớp vị trí lúc giao bóng (sai số trung vị 0,14 m), cộng 563 lần thay người lấy từ dữ liệu sự kiện. Nhờ vậy mỗi ô ở mỗi thời điểm đều biết là ai, đá vị trí gì.
+
 ## Giới hạn
 
 - **Phản ứng là tương quan, không phải nhân quả.** Model học "khi cầu thủ này ở đây thì những người khác thường ở đâu" từ dữ liệu thật. Ngoài ra phản ứng đang yếu (1,4 m cho 10 m), nên các phương án có thể trông tốt hơn thực tế, vì đối thủ trong model bám theo ít hơn ngoài đời.
@@ -273,6 +339,18 @@ Trang `runs.html` mặc định mở phần này ("FRA-DEN · learned objective"
 ```
 ```bash
 .venv/bin/python -m h2predict.irl --train-matches 24
+```
+```bash
+.venv/bin/python -m h2predict.irl --cache
+```
+```bash
+.venv/bin/python -m h2predict.roles
+```
+```bash
+.venv/bin/python -m h2predict.styles
+```
+```bash
+.venv/bin/python -m h2predict.marl
 ```
 ```bash
 .venv/bin/python -m h2predict.runs --match pff:3834 --value pass
