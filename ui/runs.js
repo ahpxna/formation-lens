@@ -64,6 +64,13 @@ function draw() {
   const real = [start[a], ...tp.realFuture.map((s) => s[a])].filter(ok);
   arrow(g, real, { stroke: "#ffffff", "stroke-width": 0.55 });
   arrow(g, [start[a], ...tp.best.run], { stroke: "#8fd16a", "stroke-width": 0.65, "stroke-dasharray": "1.4 0.8" });
+  if (state.doc.value === "irl") {
+    const costly = tp.epvDelta > 0 ? `the better run would also have raised the team's EPV (${tp.epvDelta >= 0 ? "+" : ""}${tp.epvDelta.toFixed(3)}): worth a look` : `the real run kept a higher team EPV (${tp.epvDelta.toFixed(3)}): possibly a deliberate, creative choice`;
+    $("#caption").innerHTML = `<b>${label(a)}</b> at ${clock(tp.clock)}, ${tp.group}. White = the real run (8 s); dashed green = the same-length run that best fits what players in this role usually aim for (learned from 24 other matches). ` +
+      `Hollow circles = where the others are forecast 8 s later (the same for both runs). Gap to that objective ${tp.gain.toFixed(2)}, mostly: ${tp.why || "several small things"}. ` +
+      `By EPV, ${costly}. The real run beat ${pct(tp.realBeats)} of the ${tp.nAlts} alternatives.`;
+    return;
+  }
   $("#caption").innerHTML = `<b>${label(a)}</b> at ${clock(tp.clock)}. White = the real run (8 s); dashed green = the run the value model prefers. ` +
     `Hollow circles = where the others are predicted 8 s later if ${label(a)} makes the ${state.show === "best" ? "suggested" : "real"} run. ` +
     `${state.doc.valueLabel || "Value"}: ${tp.ctReal.toFixed(3)} → ${tp.ctBest.toFixed(3)} (+${tp.gain.toFixed(3)}); the suggestion beats the real run in ${pct(tp.robust)} of the predicted futures; ` +
@@ -73,6 +80,15 @@ function draw() {
 function renderList() {
   const d = state.doc;
   const s = d.summary;
+  if (d.value === "irl") {
+    $("#summary").innerHTML = `${s.playerMoments} runs of both teams, in and out of possession, scored with the objective learned from 24 other matches (inverse RL). ` +
+      `On this held-out match the real runs beat <b>${pct(s.realRunBeatsAlternatives)}</b> of the same-length alternatives (chance: 50%). Largest gaps between a run and the player's own group objective:`;
+    $("#list").innerHTML = d.turningPoints.map((tp, k) => `<button class="tp${k === state.sel ? " on" : ""}" data-k="${k}"><b>${clock(tp.clock)}</b> · ${label(tp.agent)}
+      <small>${tp.group} · ${tp.why || ""} · EPV ${tp.epvDelta >= 0 ? "+" : ""}${tp.epvDelta.toFixed(3)}</small></button>`).join("");
+    $("#advice").innerHTML = (d.advice || []).slice(0, 8).map((x) => `<li><b>${label(x.agent)}</b>: clearly below their group's objective in ${pct(x.better)} of ${x.moments} runs, mostly ${x.why || "mixed reasons"}; the better run also had a higher team EPV in ${pct(x.costlyShare)} of those.</li>`).join("");
+    document.querySelectorAll("[data-k]").forEach((b) => (b.onclick = () => { state.sel = +b.dataset.k; renderList(); draw(); }));
+    return;
+  }
   const where = s.realRunBeatsWhereItMatters != null ? ` (<b>${pct(s.realRunBeatsWhereItMatters)}</b> in the quarter of runs where the direction matters most)` : "";
   $("#summary").innerHTML = `${s.moments} attacking moments, ${s.playerMoments} player runs scored. The real runs beat ` +
     `<b>${pct(s.realRunBeatsAlternatives)}</b> of the same-length alternatives on average${where}; a clearly better run (in at least 60% of the predicted futures) ` +
@@ -112,7 +128,9 @@ async function boot() {
     document.querySelectorAll("#react button").forEach((x) => x.classList.toggle("on", x === b));
     draw();
   }));
-  await load(index[0].file);
+  const first = index.find((e) => e.file.endsWith("_irl.json")) || index[0];  // the learned objective first
+  $("#match").value = first.file;
+  await load(first.file);
 }
 
 boot();

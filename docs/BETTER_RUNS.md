@@ -174,6 +174,70 @@ Trong 2.253 pha tấn công thật của 6 trận kiểm định, so với độ
 - **Mục tiêu do HLV đặt cho từng vai trò**, ví dụ "tiền vệ trụ: luôn là lựa chọn chuyền an toàn + che khoảng trống trung tâm". Khi đó tối ưu hóa có ý nghĩa vì mục tiêu đúng với ý đồ.
 - **Kiểm chứng bằng kết quả trên nhiều trận**: những pha mà đường chạy thật lệch xa phương án "tốt" có dẫn tới ít cơ hội hơn không.
 
+## Hướng 1: học mục tiêu từ chính cầu thủ (inverse RL) — `h2predict/irl.py`
+
+**Ý tưởng.**
+- Mỗi đường chạy thật dài ít nhất 4 m trong 8 s được coi là một **lựa chọn**: cầu thủ có thể chạy cùng quãng đường đó theo 12 hướng khác, và đã chọn một hướng.
+- Học một **hàm mục tiêu**, là tổng có trọng số của 11 yếu tố về nơi đường chạy kết thúc, sao cho các lựa chọn thật có xác suất cao nhất.
+- Đây là maximum-entropy IRL một bước (Ziebart và cộng sự, 2008), tương đương một conditional logit.
+- Trọng số được học riêng cho **6 nhóm**: có bóng / mất bóng × hậu vệ / tiền vệ / tiền đạo. Nhờ vậy nhiệm vụ phòng ngự cũng được học.
+
+**11 yếu tố:**
+- độ sâu, khoảng cách tới bóng, lệch khỏi vị trí quen thuộc;
+- khoảng cách tới đối thủ gần nhất, tới đồng đội gần nhất;
+- ở phía sau bóng (goal-side), độ gần trục giữa;
+- EPV của đội, sẵn sàng nhận đường chuyền, việt vị;
+- khoảng cách tới đường nối bóng–khung thành nhà.
+
+**Chống rò rỉ đáp án:**
+- Vị trí của mọi người khác ở +8 s lấy từ dự báo **không biết đường chạy thật**, và giống nhau cho mọi phương án.
+- Mọi phương án có **cùng quãng đường**.
+- Chấm điểm trên **6 trận chưa dùng để học**.
+
+**Kết quả** (học từ 24 trận, 262.276 lựa chọn; kiểm tra trên 6 trận, 65.315 lựa chọn; đoán bừa = 50%):
+
+| Cách chấm | Đường chạy thật tốt hơn bao nhiêu % phương án |
+|---|---|
+| **Mục tiêu học được (IRL)** | **66,0%**, đều ở cả 6 nhóm (65–67%); riêng Pháp – Đan Mạch 67,1% |
+| Chỉ EPV của đội | 52,1% |
+| Tham chiếu: gần nhất với vị trí model dự báo cho người đó | 79,8% |
+
+**Đạt tiêu chí "thắng rõ hơn 50%"**, và ổn định: học từ 3 trận hay 24 trận cho cùng một con số.
+
+Model dự báo vẫn đoán đúng hơn (80%), vì nó dùng toàn bộ lịch sử và thói quen riêng, nhưng không giải thích được. Mục tiêu học được giải thích được khoảng 2/3 hành vi bằng 11 yếu tố có tên.
+
+**Cầu thủ đang tối ưu điều gì** (trọng số theo độ lệch chuẩn; + là họ chạy về phía có nhiều yếu tố đó hơn):
+
+| Nhóm | Yếu tố nổi bật | Diễn giải |
+|---|---|---|
+| Có bóng, hậu vệ | lệch vị trí −0,43; đối thủ gần nhất −0,37; xa bóng −0,30; giãn khỏi đồng đội +0,22 | Giữ vị trí, ở gần nhịp chơi, giãn đội hình |
+| Có bóng, tiền vệ | xa bóng −0,34; lệch vị trí −0,32; đối thủ gần nhất −0,26; phía sau bóng −0,21 | Hỗ trợ gần bóng, ở trước bóng |
+| Có bóng, tiền đạo | phía sau bóng −0,32; xa bóng −0,28; đối thủ gần nhất −0,28; độ sâu +0,24 | Đứng trước bóng, dâng lên, gần nhịp chơi |
+| Mất bóng, hậu vệ | lệch vị trí −0,44; **phía sau bóng +0,42**; độ sâu −0,31; đối thủ gần nhất −0,31; lệch đường bóng–khung thành −0,28 | **Che phía sau, lùi sâu, kèm người, đứng trên đường bóng–khung thành** |
+| Mất bóng, tiền vệ | lệch vị trí −0,39; xa bóng −0,34; phía sau bóng +0,25; lệch đường bóng–khung thành −0,22 | Áp sát bóng nhưng vẫn che phía sau |
+| Mất bóng, tiền đạo | **xa bóng −0,39**; lệch vị trí −0,35; đối thủ gần nhất −0,24 | **Pressing**: áp sát bóng |
+
+Lưu ý khi đọc: các trọng số là tác động riêng phần giữa những yếu tố có liên quan với nhau. Ví dụ "đối thủ gần nhất −" ở tuyến tấn công nghĩa là họ ở gần nhịp chơi, không phải cố tình lao vào đối thủ.
+
+**Tìm chỗ lệch.** Với mỗi đường chạy, mô hình tìm phương án tốt nhất theo **chính mục tiêu của nhóm người đó**. Độ chênh được giải thích bằng các yếu tố đóng góp nhiều nhất, rồi đối chiếu với EPV. Ví dụ trên trận Pháp – Đan Mạch:
+- **95:44, DEN #6** (tiền đạo, đội đang mất bóng): chạy dạt xa bóng. Mục tiêu của nhóm muốn áp sát bóng và giữ vị trí quen. EPV cũng nghiêng về phương án áp sát (+0,003), nên **đáng xem lại**.
+- **60:32, FRA #7** (hậu vệ, đội đang mất bóng): lệch vị trí và không đứng phía sau bóng như chuẩn của nhóm. Nhưng đường chạy thật giữ EPV cao hơn (phương án "chuẩn" kém hơn 0,057), nên **có thể là lựa chọn có chủ đích**.
+- **Khuynh hướng theo cầu thủ:** FRA #1 thấp hơn rõ so với mục tiêu của nhóm ở 35% trong 454 đường chạy, chủ yếu vì xa bóng và xa đối thủ. DEN #8 ở 33%, chủ yếu vì xa đối thủ và lệch vị trí.
+- Trong 10% chỗ lệch lớn nhất, phương án "chuẩn" cũng có EPV cao hơn ở **46%** số trường hợp. Như vậy chỗ lệch tự nó **không** có nghĩa là sai. Khi cả mục tiêu học được và EPV cùng chỉ một hướng, đó là pha đáng ưu tiên cho HLV xem.
+
+Trang `runs.html` mặc định mở phần này ("FRA-DEN · learned objective"): mỗi pha có đường chạy thật, phương án theo chuẩn của nhóm, lý do và kết luận theo EPV.
+
+**Giới hạn của hướng 1:**
+- Mục tiêu là **chuẩn trung bình của cầu thủ World Cup cùng nhóm**, không phải ý đồ của một HLV cụ thể. Lệch chuẩn có thể là chỉ đạo riêng hoặc sáng tạo.
+- Vai trò mới chia thô thành hậu vệ / tiền vệ / tiền đạo. Roster của PFF có vị trí chi tiết (RW, RB, CM…) để chia mịn hơn.
+- Vẫn là đường chạy thẳng 8 s.
+
+**Bước tiếp theo của hướng 1:**
+1. Chia vai trò theo vị trí chi tiết trong roster.
+2. Học mục tiêu **riêng cho từng đội**, rồi so một đội với chuẩn của chính nó (phong cách) thay vì chuẩn chung.
+3. Đưa top chỗ lệch cho HLV chấm (giữ hay bỏ) để đo độ hữu ích.
+4. Dùng mục tiêu học được làm phần thưởng cho MARL: tác nhân học được "chạy như cầu thủ thật" trước, rồi mới tối ưu thêm.
+
 ## Giới hạn
 
 - **Phản ứng là tương quan, không phải nhân quả.** Model học "khi cầu thủ này ở đây thì những người khác thường ở đâu" từ dữ liệu thật. Ngoài ra phản ứng đang yếu (1,4 m cho 10 m), nên các phương án có thể trông tốt hơn thực tế, vì đối thủ trong model bám theo ít hơn ngoài đời.
@@ -206,6 +270,9 @@ Trong 2.253 pha tấn công thật của 6 trận kiểm định, so với độ
 ```
 ```bash
 .venv/bin/python -m h2predict.options
+```
+```bash
+.venv/bin/python -m h2predict.irl --train-matches 24
 ```
 ```bash
 .venv/bin/python -m h2predict.runs --match pff:3834 --value pass
