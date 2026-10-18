@@ -238,7 +238,7 @@ Trang `runs.html` mặc định mở phần này ("FRA-DEN · learned objective"
 3. Đưa top chỗ lệch cho HLV chấm (giữ hay bỏ) để đo độ hữu ích.
 4. Dùng mục tiêu học được làm phần thưởng cho MARL: tác nhân học được "chạy như cầu thủ thật" trước, rồi mới tối ưu thêm.
 
-## Hướng 1, tiếp theo: vai trò chi tiết, phong cách đội, MARL một bước, nhiều bước, có kết quả và đối thủ phản ứng
+## Hướng 1, tiếp theo: vai trò chi tiết, phong cách đội, MARL một bước, nhiều bước, có kết quả, đối thủ phản ứng và nguồn gốc thiên lệch
 
 Phần này dùng các tập lựa chọn tính sẵn cho **cả 64 trận** (`python -m h2predict.irl --cache`): 58 trận để học, 6 trận để kiểm tra.
 
@@ -467,8 +467,68 @@ Với đối thủ đi theo dự báo (có phản ứng ở bước sau), kết 
    - Phản ứng thật còn có phần đoán trước và tổ chức lại cả đội, vượt quá "bám người gần nhất".
 
    Vì vậy **vẫn chưa so được với cầu thủ thật**.
+   - *Cập nhật sau mục 8:* nguồn gốc thật là việc phát lại vòng hở qua nhiều bước, không phải hai nghi phạm trên. Ở bước đầu tiên thì so được với cầu thủ thật.
 3. **So với hướng ngẫu nhiên, kết luận giữ nguyên qua cả ba loại đối thủ.** Khi có bóng, mục tiêu học được (IRL, β = 0) chọn hướng còn kém ngẫu nhiên. β = 180 hơn ngẫu nhiên +0,037 khi có bóng và +0,030 khi không bóng.
 4. **Với đối thủ phản ứng, cái giá của β = 180 nhỏ hơn nhiều:** đường chạy gần như điển hình như cầu thủ thật (−0,017 khi có bóng, +0,036 khi không bóng). Khi đối thủ phát lại, con số này là −0,059 / −0,020.
+
+### 8. Nguồn gốc của "phần lợi khi lệch" — `h2predict/bias.py`
+Bốn phép thử trên 2.160 episode của 6 trận chưa học. Mốc so luôn là đường chạy thật, và mọi phép so dùng chung một chuỗi số ngẫu nhiên.
+
+**1. Tĩnh, chỉ mô hình giá trị.** Lấy cấu hình thật sau 4 s (bóng thật, đội cầm bóng thật), dời người sang hướng ngẫu nhiên xa đúng bằng đường chạy thật. Số liệu là thay đổi cho đội bị dời:
+
+| | EPV | Giá trị đường chuyền kế tiếp |
+|---|---|---|
+| Một cầu thủ, đội có bóng (19.371) | −0,0008 | −0,0016 |
+| Một cầu thủ, đội không bóng (20.176) | −0,0006 | −0,0002 |
+| Cả đội có bóng | −0,0050 | −0,0100 |
+| Cả đội không bóng | −0,0029 | −0,0014 |
+
+→ **Mô hình giá trị không có lỗi này.** Vị trí thật được chấm cao hơn vị trí ngẫu nhiên. Độ giãn cách gần như không đổi (10,0 → 9,8 m), và không liên quan tới mức thay đổi EPV (tương quan −0,06).
+
+**2–4. Trong mô phỏng: cả đội (hoặc một người) đi hướng ngẫu nhiên, mọi người khác phát lại đường chạy thật**
+
+| Thay đổi EPV so với đường chạy thật | Sau bước 1 | Bước 2 | Bước 3 |
+|---|---|---|---|
+| Cả đội có bóng | **−0,0118** | +0,0065 | +0,0215 |
+| Cả đội không bóng | +0,0004 | +0,0094 | +0,0160 |
+| Một cầu thủ đội có bóng | −0,0016 | −0,0003 | +0,0011 |
+| Một cầu thủ đội không bóng | +0,0001 | +0,0013 | +0,0015 |
+| Cả đội có bóng, tắt chuyền bóng | −0,0077 | +0,0183 | +0,0452 |
+| Cả đội không bóng, tắt chuyền bóng | −0,0031 | −0,0040 | −0,0040 |
+
+Tách theo việc ngoài đời bóng có đổi chủ trong 12 s không, đội có bóng, sau bước 3: bóng thật sự được giữ (1.575 episode) +0,0150; bóng thật sự đổi chủ (585 episode) **+0,0388**.
+
+→ **Thủ phạm là việc phát lại vòng hở qua nhiều bước.**
+- Ở bước 1, đường chạy thật tốt hơn hoặc ngang hướng ngẫu nhiên, khớp với phép thử tĩnh.
+- Sau đó mô phỏng đi khác thực tế (bóng tới người khác, đổi chủ hoặc không), nhưng đường chạy thật được phát lại vẫn phản ứng với *chuyện thật sự đã xảy ra*. Ví dụ ngoài đời đội mất bóng nên lùi về, trong khi trong mô phỏng đội vẫn cầm bóng.
+- Vì vậy phần lợi lớn gấp 2,6 lần ở những pha mà ngoài đời bóng đổi chủ, và tăng gấp đôi khi tắt chuyền bóng (mô phỏng càng lệch khỏi thực tế).
+- Đối thủ phản ứng (mục 7) không chữa được lỗi này, vì vấn đề không nằm ở việc đối thủ có phản ứng hay không.
+
+**5. Phép so công bằng là ở bước đầu tiên**, trước khi mô phỏng kịp lệch khỏi thực tế. Độ dài đường chạy bằng thật; EPV đo sau 4 s.
+
+| Đội mình | Có bóng, so với thật | so với ngẫu nhiên | Không bóng, so với thật | so với ngẫu nhiên |
+|---|---|---|---|---|
+| *Đối thủ phát lại đường chạy thật* | | | | |
+| Hướng ngẫu nhiên | **−0,0118** | | +0,0004* | |
+| Bắt chước (IRL) | −0,0109 | +0,0009 | −0,0012 | −0,0016 |
+| MARL β = 0 | −0,0130 | −0,0012* | −0,0041 | −0,0045 |
+| MARL β = 60 | −0,0054 | +0,0064 | −0,0024 | −0,0028 |
+| **MARL β = 180** | **+0,0176** [+0,0153; +0,0202] | +0,0294 | −0,0003* | −0,0007 |
+| *Đối thủ phản ứng đã hiệu chỉnh* | | | | |
+| Hướng ngẫu nhiên | −0,0117 | | +0,0064 | |
+| Bắt chước (IRL) | −0,0107 | +0,0010 | +0,0025 | −0,0039 |
+| MARL β = 0 | −0,0124 | −0,0007* | −0,0000* | −0,0064 |
+| MARL β = 60 | −0,0048 | +0,0069 | +0,0018 | −0,0046 |
+| **MARL β = 180** | **+0,0181** [+0,0157; +0,0206] | +0,0298 | +0,0037 | −0,0027 |
+
+\* khoảng tin cậy 95% chứa 0.
+
+**Đọc kết quả**
+1. **Khi có bóng, cầu thủ thật có kỹ năng chọn hướng:** đường chạy thật hơn hướng ngẫu nhiên 0,012 EPV sau 4 s. Đây cũng là bằng chứng rằng thước đo ghi nhận được kỹ năng thật, chứ không phải chỉ thưởng cho chuyện "khác thường".
+2. **Mục tiêu học được (IRL, β = 0) chỉ ngang hướng ngẫu nhiên khi có bóng**, tức là kém cầu thủ thật.
+3. **β = 180 hơn cả đường chạy thật khi có bóng: +0,018 EPV sau 4 s**, khoảng tin cậy xa 0, với cả hai loại đối thủ. Đây là phép so đầu tiên với cầu thủ thật mà không bị thiên lệch đã biết nào ảnh hưởng. Lưu ý: kết quả nằm trong thế giới của mô hình, và β = 180 được tối ưu đúng theo loại thước đo này (EPV qua mô hình chuyền), nên mô hình sai ở đâu thì chính sách có thể khai thác chỗ đó. Cần kiểm chứng ngoài mô hình (bước tiếp theo).
+4. **Khi không có bóng, không chính sách nào hơn hướng ngẫu nhiên**, và cầu thủ thật cũng chỉ ngang ngẫu nhiên. EPV sau 4 s gần như không phân biệt được vị trí phòng ngự tốt hay xấu.
+5. Khi đối thủ phản ứng, hướng phòng ngự ngẫu nhiên lại "hơn" thật (+0,006). Lý do có lẽ là hiệu chỉnh cho *người tấn công bám hậu vệ* bị ngược chiều nhân quả: tương quan giữa hai bên phần lớn là hậu vệ bám người tấn công, không phải ngược lại. Nên chỉ giữ phần bám người cho hậu vệ.
 
 ### Về chân thuận
 - **Dữ liệu chưa có.** `players.csv` và roster của PFF chỉ có chiều cao, số áo và vị trí chi tiết (CF, RW, RB, CM…), không có chân thuận. Muốn dùng thì cần nguồn ngoài, và phải xem điều khoản sử dụng của nguồn đó.
@@ -484,21 +544,17 @@ Với đối thủ đi theo dự báo (có phản ứng ở bước sau), kết 
 - Việt vị chỉ ước lượng bằng hàng thủ dự đoán ở +8 s.
 - **MARL dùng model dự báo làm môi trường.** Phản ứng của model là tương quan và còn yếu. Vị trí dự báo là trung bình của 6 kịch bản, nên gọn hơn thực tế. Bóng đi theo người giữ, chưa có đường chuyền được lên kế hoạch, và mỗi bước dài 4 s.
 - **Mục tiêu học được là mô tả, không phải chuẩn mực:** nó cho biết cầu thủ World Cup thường làm gì, không cho biết điều gì tạo ra bàn thắng (mục 5, 6).
-- **Chưa so được với cầu thủ thật:** lệch hướng nào cũng được lợi khoảng 0,02 EPV, kể cả khi đối thủ phản ứng đã hiệu chỉnh (mục 7), còn nước dự báo thì ngắn hơn thực tế (bám dự báo thì bị thiệt). Mục 6 và 7 chỉ so các chính sách với nhau và với hướng ngẫu nhiên.
+- **Chỉ so được với cầu thủ thật ở bước đầu tiên (4 s):** sau đó mô phỏng lệch khỏi thực tế, còn đường chạy thật được phát lại vẫn phản ứng với chuyện thật đã xảy ra, nên lệch hướng nào cũng được lợi (mục 8). Ngoài ra nước dự báo ngắn hơn thực tế, nên bám dự báo thì bị thiệt (mục 6).
+- **Thước đo phòng ngự còn yếu:** EPV sau 4 s gần như không phân biệt được vị trí phòng ngự (mục 8).
 - **Chưa có HLV kiểm chứng.** Mọi gợi ý chỉ là giả thuyết để HLV xem lại.
 
 ## Bước tiếp theo
 
-1. **Tìm nguồn gốc "phần lợi của việc lệch"** (mục 7):
-   - Lệch chỉ một cầu thủ thay vì cả đội.
-   - Kiểm tra tĩnh: dời một cầu thủ trong cấu hình thật xem EPV và giá trị đường chuyền đổi ra sao.
-   - Xem các mô hình giá trị có thưởng cho đội hình giãn ra hơn thực tế không.
-
-   Nếu lỗi nằm ở mô hình giá trị thì phải hiệu chỉnh lại chúng trước khi so với cầu thủ thật.
-2. **Cho chính sách chọn cả độ dài:** ví dụ 3 mức theo tốc độ gần đây của cầu thủ, thay cho độ dài của nước dự báo trung bình (ngắn hơn thực tế).
-3. **HLV chấm gợi ý của β = 180 so với β = 0:** gợi ý nào hợp lý, gợi ý nào "khác thường" mà vô ích. Từ đó chọn β theo đánh giá của người làm nghề.
-4. **Kiểm chứng bằng kết quả trận:** những pha mà đường chạy thật "kém" theo mô hình có thật sự dẫn tới ít cú sút hơn không.
-5. Bước thời gian 1 s, và train với nhiều mẫu đường chạy bất thường để model phản ứng tốt hơn.
+1. **Kiểm chứng β = 180 ngoài mô hình, bằng dữ liệu thật:** trong các pha thật, khi đường chạy thật trùng hướng mà β = 180 chọn, đội có sút nhiều hơn trong 10 s sau đó không, so với khi đường chạy thật khác hướng? Đây là phép thử không dùng mô phỏng.
+2. **Đánh giá theo kiểu "bước đầu từ mọi tình huống thật":** mỗi lần chỉ so một bước 4 s, bắt đầu lại từ trạng thái thật. Có thể train nhiều bước, nhưng phép so với cầu thủ thật chỉ dùng bước đầu.
+3. **Thước đo phòng ngự tốt hơn:** cú sút của đối thủ trong 10 s, hoặc mối nguy của đường chuyền kế tiếp, tính từ trạng thái thật.
+4. **Chỉ giữ phần bám người cho hậu vệ** trong đối thủ phản ứng (mục 7–8).
+5. **HLV chấm gợi ý tấn công của β = 180** so với đường chạy thật.
 
 ## Chạy lại
 
@@ -546,6 +602,12 @@ Với đối thủ đi theo dự báo (có phản ứng ở bước sau), kết 
 ```
 ```bash
 .venv/bin/python -m h2predict.marl_outcome --react-check
+```
+```bash
+.venv/bin/python -m h2predict.bias
+```
+```bash
+.venv/bin/python -m h2predict.bias --first-step
 ```
 ```bash
 .venv/bin/python -m h2predict.runs --match pff:3834 --value pass

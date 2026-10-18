@@ -120,7 +120,7 @@ def sides(b, attack, rest=REPLAY):
 
 
 def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0.0, lam=0.0, train=False, kl=0.3,
-                rng=None, real_length=False, react=None):
+                rng=None, real_length=False, react=None, allow_pass=True):
     """One batch of episodes with passes. who (E, A): POLICY / REPLAY / FOLLOW for every deciding player. Values are
     from the side of the team on the ball at the start (k0). Returns per-step results and, when training, the loss of
     the POLICY players: learned objective exactly over their own options, their difference reward for the EPV change,
@@ -128,7 +128,7 @@ def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0
     a run as long as their real one (the real run is option 0), as in h2predict.irl, instead of options as long as the
     forecast's move. REACT players (and everyone not deciding) go where the conditional forecaster puts them once
     told where the others chose to go, plus the individual following it lacks, calibrated on real matches
-    (react = h2predict.react.load_react())."""
+    (react = h2predict.react.load_react()). allow_pass=False: the player on the ball always keeps it (diagnostics)."""
     rng = rng if rng is not None else np.random.default_rng(0)
     b = {key: (v.copy() if isinstance(v, np.ndarray) else v) for key, v in b.items()}
     E, A = b["slots"].shape
@@ -200,7 +200,7 @@ def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0
 
         # the pass decision, on the configuration everyone made; when learning the EPV share, also with each policy
         # player who left the forecast's move put back on it (difference reward)
-        p_pass = (1.0 - hold[ar, h]).clamp(0.05, 0.95).numpy()
+        p_pass = (1.0 - hold[ar, h]).clamp(0.05, 0.95).numpy() if allow_pass else np.zeros(E)
         Ps, Vs, hs, ks, pp = [P.numpy()], [Vn.numpy()], [h.numpy()], [k.numpy()], [p_pass]
         cf = (pol & (choice != 0)).nonzero(as_tuple=False) if train and beta > 0 else torch.zeros(0, 2, dtype=torch.long)
         ce, ca = cf[:, 0], cf[:, 1]
@@ -316,21 +316,22 @@ def scale(model, eps, W, mu, sd, opt, net, dev, crowd_m, batch, n_batches=4):
     return float(d_obj.std() / d_epv.std()), float(d_obj.std()), float(d_epv.std())
 
 
-def world(model, eps, policy, who_fn, W, mu, sd, opt, net, dev, crowd_m, batch, real_length=False, react=None):
+def world(model, eps, policy, who_fn, W, mu, sd, opt, net, dev, crowd_m, batch, real_length=False, react=None, passes=True):
     """Per-episode results of one world; who_fn(b) -> who. The same random numbers in every world (paired)."""
     rng = np.random.default_rng(1)
     torch.manual_seed(1)
-    res = {key: [] for key in ("epv", "obj_att", "n_att", "obj_def", "n_def", "passes", "completed", "kl", "n_pol")}
+    res = {key: [] for key in ("epv", "epv_steps", "obj_att", "n_att", "obj_def", "n_def", "passes", "completed", "kl", "n_pol")}
     for i in range(0, len(eps), batch):
         b = stack(eps[i:i + batch])
         who = who_fn(b)
         with torch.no_grad():
             out = run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, rng=rng, real_length=real_length,
-                              react=react)
+                              react=react, allow_pass=passes)
         am = torch.as_tensor(b["amask"])
         att = am & torch.as_tensor(b["team"] == b["k"][:, None])
         R = out["obj"].sum(1) / STEPS
         res["epv"].append(out["value"][:, -1].numpy())
+        res["epv_steps"].append(out["value"].numpy())
         for side, mask in (("att", att), ("def", am & ~att)):
             res[f"obj_{side}"].append((R * mask).sum(1).numpy())
             res[f"n_{side}"].append(mask.sum(1).numpy())
