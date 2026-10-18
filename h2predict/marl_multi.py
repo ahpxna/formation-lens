@@ -115,7 +115,8 @@ def stack(eps):
 
 @torch.no_grad()
 def forecast(model, b, dev):
-    """Next 4 s from the current history: probability-weighted positions and velocities, likeliest holder and state."""
+    """Next 4 s from the current history: probability-weighted positions and velocities, likeliest holder and state,
+    and the probability of each agent holding the ball 4 s later (E, 23; the ball's own column = nobody)."""
     feats, valid = agent_features(b["hxy"], b["hvel"], b["hposs"])
     glob = np.stack([b["minute"] / 90.0, b["score"] / 3.0, valid[:, -1, :N_TEAM].sum(1) / N_TEAM,
                      valid[:, -1, N_TEAM:BALL].sum(1) / N_TEAM, b["share"]], 1).astype(np.float32)
@@ -125,10 +126,11 @@ def forecast(model, b, dev):
     p = o["mode_logits"].softmax(-1).cpu()
     xy = (p[..., None, None] * o["xy"][:, :, 0].cpu()).sum(1) * torch.as_tensor(HALF)
     vel = (p[..., None, None] * o["vel"][:, :, 0].cpu()).sum(1) * 10.0
-    holder = (p[..., None] * o["poss_logits"][:, :, 0].cpu().softmax(-1)).sum(1).argmax(-1)
+    hold = (p[..., None] * o["poss_logits"][:, :, 0].cpu().softmax(-1)).sum(1)
+    holder = hold.argmax(-1)
     state = (p[..., None] * o["state_logits"][:, :, 0].cpu().softmax(-1)).sum(1).argmax(-1)
     xy[~torch.as_tensor(b["onp"])] = float("nan")
-    return xy, vel, holder, state
+    return xy, vel, holder, state, hold
 
 
 def candidates(cur, pred, mask):
@@ -171,7 +173,7 @@ def run_episode(model, b, policy, W, mu, sd, opt, dev, crowd_m, lam=0.0, train=F
             rewards.append(R.masked_fill(~am, 0.0))
             costs.append(((X[..., 0, F_MATE] * 10) < crowd_m).float().masked_fill(~am, 0.0))
             continue
-        xy, vel, holder, state = forecast(model, b, dev)
+        xy, vel, holder, state, _ = forecast(model, b, dev)
         cur = torch.as_tensor(b["hxy"][:, -1])
         cur_a = torch.gather(cur, 1, slot[..., None].expand(-1, -1, 2))
         pred_a = torch.gather(xy, 1, slot[..., None].expand(-1, -1, 2))
