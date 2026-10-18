@@ -114,14 +114,24 @@ def stack(eps):
 
 
 @torch.no_grad()
-def forecast(model, b, dev):
+def forecast(model, b, dev, cond=None):
     """Next 4 s from the current history: probability-weighted positions and velocities, likeliest holder and state,
-    and the probability of each agent holding the ball 4 s later (E, 23; the ball's own column = nobody)."""
+    and the probability of each agent holding the ball 4 s later (E, 23; the ball's own column = nobody).
+    cond = (mask (E, 23), xy (E, 23, 2) metres, steps): players whose position 4 s later is given to the conditional
+    forecaster (h2predict.cond); with steps=2 their run is also given as continuing at the same speed for 4 s more."""
     feats, valid = agent_features(b["hxy"], b["hvel"], b["hposs"])
     glob = np.stack([b["minute"] / 90.0, b["score"] / 3.0, valid[:, -1, :N_TEAM].sum(1) / N_TEAM,
                      valid[:, -1, N_TEAM:BALL].sum(1) / N_TEAM, b["share"]], 1).astype(np.float32)
     batch = {"hist": feats, "hist_valid": valid, "hist_state": b["hstate"], "agent_ctx": b["ctx"], "glob": glob,
              "on_pitch": b["onp"]}
+    if cond is not None:
+        mask, xy4, steps = cond
+        cm = np.zeros((len(mask), model.F, BALL + 1), bool)
+        cx = np.zeros((len(mask), model.F, BALL + 1, 2), np.float32)
+        cm[:, :steps] = mask[:, None]
+        xy4 = np.nan_to_num(xy4)
+        cx[:, 0], cx[:, 1] = xy4 / HALF, (2 * xy4 - np.nan_to_num(b["hxy"][:, -1])) / HALF
+        batch["cond_mask"], batch["cond_xy"] = cm, cx
     o = model({k: torch.as_tensor(v).to(dev) for k, v in batch.items()})
     p = o["mode_logits"].softmax(-1).cpu()
     xy = (p[..., None, None] * o["xy"][:, :, 0].cpu()).sum(1) * torch.as_tensor(HALF)

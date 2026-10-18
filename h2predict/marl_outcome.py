@@ -20,6 +20,7 @@ direction of the same length.
     .venv/bin/python -m h2predict.marl_outcome
     .venv/bin/python -m h2predict.marl_outcome --eval-only
     .venv/bin/python -m h2predict.marl_outcome --length-check
+    .venv/bin/python -m h2predict.marl_outcome --react-check
 """
 import argparse
 import json
@@ -36,13 +37,14 @@ from .game import F_BALL, F_GOALSIDE, F_LINE, F_MATE, run_features
 from .marl import OUT as MARL1
 from .marl_multi import GAMMA, OUT as MULTI, STEPS, candidates, episodes, forecast, stack
 from .options import choice_features, choice_probs, load_options, options
+from .react import load_react, marking
 from .roles import ROLES, load_roles
 from .styles import OUT as STYLES
 from .train import load_games, pick_device
 
 OUT = Path("checkpoints/marl_outcome.json")
 INV1 = np.argsort(ORDER1)  # absolute index -> index in team 1's attacking frame
-POLICY, REPLAY, FOLLOW = 0, 1, 2
+POLICY, REPLAY, FOLLOW, REACT = 0, 1, 2, 3
 
 
 def attack_frame(P, V, k):
@@ -112,19 +114,21 @@ def gather_a(x, slot):
 
 def sides(b, attack, rest=REPLAY):
     """who (E, A): the team on the ball at the start (attack True) or the other team plays the policy; the rest are
-    `rest` (REPLAY: their real runs, FOLLOW: the forecast's move)."""
+    `rest` (REPLAY: their real runs, FOLLOW: the forecast's move, REACT: the forecast reacting within the step)."""
     on = b["team"] == b["k"][:, None]
     return np.where(on == np.asarray(attack)[:, None], POLICY, rest)
 
 
 def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0.0, lam=0.0, train=False, kl=0.3,
-                rng=None, real_length=False):
+                rng=None, real_length=False, react=None):
     """One batch of episodes with passes. who (E, A): POLICY / REPLAY / FOLLOW for every deciding player. Values are
     from the side of the team on the ball at the start (k0). Returns per-step results and, when training, the loss of
     the POLICY players: learned objective exactly over their own options, their difference reward for the EPV change,
     the later steps by REINFORCE, KL to the imitation policy. real_length: the POLICY players choose the direction of
     a run as long as their real one (the real run is option 0), as in h2predict.irl, instead of options as long as the
-    forecast's move."""
+    forecast's move. REACT players (and everyone not deciding) go where the conditional forecaster puts them once
+    told where the others chose to go, plus the individual following it lacks, calibrated on real matches
+    (react = h2predict.react.load_react())."""
     rng = rng if rng is not None else np.random.default_rng(0)
     b = {key: (v.copy() if isinstance(v, np.ndarray) else v) for key, v in b.items()}
     E, A = b["slots"].shape
@@ -134,6 +138,7 @@ def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0
     who = torch.as_tensor(who)
     pol = am & (who == POLICY)
     replay = am & (who == REPLAY)
+    reacting = am & (who == REACT)
     anchor_a = gather_a(torch.as_tensor(b["ctx"][:, :, :2] * HALF), slot)
     k0 = torch.as_tensor(b["k"])
     k, h = k0.clone(), torch.as_tensor(start_holder(b))
@@ -164,10 +169,25 @@ def run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, beta=0
             logp = torch.log_softmax(logits, -1)
             div = (logp.exp() * (logp - ref)).masked_fill(~ok, 0.0).sum(-1)
             log["kl"].append(div.detach().masked_fill(~pol, 0.0))
-        chosen = torch.gather(ends, 2, choice[..., None, None].expand(-1, -1, 1, 2))[:, :, 0]
         rows = am.nonzero(as_tuple=False)
         re, ra = rows[:, 0], rows[:, 1]
-        P, Vn = xy.clone(), vel.clone()
+        base_xy, base_vel = xy, vel
+        if reacting.any():  # the opponents react within the step to where the others chose to go (h2predict.react)
+            movers = am & ~reacting
+            given = xy.clone()
+            picked = torch.gather(ends, 2, choice[..., None, None].expand(-1, -1, 1, 2))[:, :, 0]
+            mr = movers.nonzero(as_tuple=False)
+            given[mr[:, 0], slot[mr[:, 0], mr[:, 1]]] = picked[mr[:, 0], mr[:, 1]]
+            mask = np.zeros((E, BALL + 1), bool)
+            mask[mr[:, 0].numpy(), slot[mr[:, 0], mr[:, 1]].numpy()] = True
+            xc, vc = forecast(model, b, dev, cond=(mask, given.numpy(), react["steps"]))[:2]
+            defending = (reacting & (team != k[:, None])).any(1).numpy()
+            gain = np.where(defending[:, None], np.asarray(react["gain"]["defenders"]), np.asarray(react["gain"]["attackers"]))
+            add = marking({"slots": b["slots"], "hxy": b["hxy"]}, given.numpy(), xy.numpy(), movers.numpy(), reacting.numpy(), gain)
+            base_xy, base_vel = xc + torch.as_tensor(add, dtype=xc.dtype), vc
+            ends[reacting, 0] = gather_a(base_xy, slot)[reacting]
+        chosen = torch.gather(ends, 2, choice[..., None, None].expand(-1, -1, 1, 2))[:, :, 0]
+        P, Vn = base_xy.clone(), base_vel.clone()
         P[re, slot[re, ra]] = chosen[re, ra]
         Vn[re, slot[re, ra]] = ((chosen - cur_a) / 4.0)[re, ra]
         P[:, BALL], Vn[:, BALL] = P[ar, h], Vn[ar, h]  # the ball goes with the player on it
@@ -296,7 +316,7 @@ def scale(model, eps, W, mu, sd, opt, net, dev, crowd_m, batch, n_batches=4):
     return float(d_obj.std() / d_epv.std()), float(d_obj.std()), float(d_epv.std())
 
 
-def world(model, eps, policy, who_fn, W, mu, sd, opt, net, dev, crowd_m, batch, real_length=False):
+def world(model, eps, policy, who_fn, W, mu, sd, opt, net, dev, crowd_m, batch, real_length=False, react=None):
     """Per-episode results of one world; who_fn(b) -> who. The same random numbers in every world (paired)."""
     rng = np.random.default_rng(1)
     torch.manual_seed(1)
@@ -305,7 +325,8 @@ def world(model, eps, policy, who_fn, W, mu, sd, opt, net, dev, crowd_m, batch, 
         b = stack(eps[i:i + batch])
         who = who_fn(b)
         with torch.no_grad():
-            out = run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, rng=rng, real_length=real_length)
+            out = run_episode(model, b, policy, who, W, mu, sd, opt, net, dev, crowd_m, rng=rng, real_length=real_length,
+                              react=react)
         am = torch.as_tensor(b["amask"])
         att = am & torch.as_tensor(b["team"] == b["k"][:, None])
         R = out["obj"].sum(1) / STEPS
@@ -384,6 +405,47 @@ def length_check(model, va, pols, self_play, W, args, batch):
     return out
 
 
+def react_check(model, va, pols, self_play, W, args, batch, react):
+    """Against opponents who react within the step (h2predict.react), one team at a time, on held-out matches: the
+    real runs, following the forecast, a random direction and every policy choosing the direction of a run as long as
+    the real one. First with the conditional forecaster's own reaction only, then calibrated to real matches."""
+    idx = np.random.default_rng(0).integers(0, len(va), (2000, len(va)))
+    full = lambda b, at: np.full(len(b["k"]), at)
+    rand = torch.zeros_like(W)
+    pol_list = [("imitation (IRL)", W), ("self-play MARL (h2predict.marl_multi)", self_play)]
+    pol_list += [(f"vs real opponents, beta {p['beta']:.4g}", torch.as_tensor(np.array(p["theta"]), dtype=torch.float32))
+                 for _, p in sorted(pols.items(), key=lambda kv: kv[1]["beta"])]
+    flat = {"steps": react["steps"], "gain": {side: [0.0, 0.0] for side in react["gain"]}}
+    out = {}
+    for label, rc in (("model reaction only", flat), ("calibrated reaction", react)):
+        print(f"{len(va)} held-out episodes, one team against opponents who react within the step ({label}):", flush=True)
+        base = {team: world(model, va, None, lambda b, at=attack: np.where(sides(b, full(b, at), REACT) == POLICY, REPLAY, REACT),
+                            *args, batch, react=rc) for team, attack in (("att", True), ("def", False))}
+        tests = [("a random direction, runs as long as the real ones", rand, True)]
+        if label == "calibrated reaction":
+            tests = [("follow the forecast", None, False)] + tests + [(f"{name}, runs as long as the real ones", th, True)
+                                                                      for name, th in pol_list]
+        random_world = {}
+        for name, th, real_length in tests:
+            for team, attack in (("att", True), ("def", False)):
+                if th is None:
+                    who_fn = lambda b, at=attack: np.where(sides(b, full(b, at), REACT) == POLICY, FOLLOW, REACT)
+                else:
+                    who_fn = lambda b, at=attack: sides(b, full(b, at), REACT)
+                r = world(model, va, th, who_fn, *args, batch, real_length=real_length, react=rc)
+                c = compare(r, base[team], team, idx)
+                line = f"  {name:<62} {'on the ball' if attack else 'without it '} vs real runs: {fmt(c)}"
+                if name.startswith("a random direction"):
+                    random_world[team] = r
+                elif real_length:
+                    c["vsRandom"] = compare(r, random_world[team], team, idx)
+                    e = c["vsRandom"]["epvGain"]
+                    line += f" | vs a random direction: EPV {e[0]:+.4f} [{e[1]:+.4f}, {e[2]:+.4f}]"
+                out.setdefault(label, {}).setdefault(name, {})[team] = c
+                print(line, flush=True)
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=2)
@@ -394,6 +456,7 @@ def main(argv=None):
     ap.add_argument("--device", default="auto")
     ap.add_argument("--eval-only", action="store_true", help=f"use the policies saved in {OUT}")
     ap.add_argument("--length-check", action="store_true", help="only the where-to-run / how-far check, saved policies")
+    ap.add_argument("--react-check", action="store_true", help="only the check against opponents who react within the step")
     a = ap.parse_args(argv)
     dev = pick_device(a.device)
     model, cfg = load_cond("checkpoints/h2_cond.pt", dev)
@@ -409,6 +472,11 @@ def main(argv=None):
     saved = json.loads(OUT.read_text()) if OUT.is_file() else {}
     pols = saved.get("policies", {})
     args = (W, mu, sd, opt, net, dev, crowd_m)
+    if a.react_check:
+        saved["reactCheck"] = react_check(model, va, pols, self_play, W, args, a.batch, load_react())
+        OUT.write_text(json.dumps(saved))
+        print(f"saved {OUT}")
+        return
     if a.length_check:
         saved["lengthCheck"] = length_check(model, va, pols, self_play, W, args, a.batch)
         OUT.write_text(json.dumps(saved))
